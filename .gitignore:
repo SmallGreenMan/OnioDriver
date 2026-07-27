@@ -1,0 +1,40 @@
+# Default ignored files
+/shelf/
+/workspace.xml
+bin/
+obj/
+out/
+
+# Rider ignored files
+/modules.xml
+/contentModel.xml
+/projectSettingsUpdater.xml
+/.idea.Altair.Demo.iml
+.idea/
+*.sln.iml
+
+# Ignored default folder with query files
+/queries/
+
+# Datasource local storage ignored files
+/dataSources/
+/dataSources.local.xml
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/
+.nuget/
+
+# Test results
+TestResults/
+coverage/
+coverage.*
+*.coverage
+*.coveragexml
+
+# Debug and log files
+*.log
+*.tmp
+*.temp
+
