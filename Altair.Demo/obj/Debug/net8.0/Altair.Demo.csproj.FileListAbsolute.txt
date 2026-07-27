@@ -12,3 +12,7 @@
 /Users/admin/Documents/AV Projects/Crestron/OnioI_TestTaskSolution/Altair.Demo/Altair.Demo/obj/Debug/net8.0/Altair.Demo.pdb
 /Users/admin/Documents/AV Projects/Crestron/OnioI_TestTaskSolution/Altair.Demo/Altair.Demo/obj/Debug/net8.0/Altair.Demo.genruntimeconfig.cache
 /Users/admin/Documents/AV Projects/Crestron/OnioI_TestTaskSolution/Altair.Demo/Altair.Demo/obj/Debug/net8.0/ref/Altair.Demo.dll
+/Users/admin/Documents/AV Projects/Crestron/OnioI_TestTaskSolution/Altair.Demo/Altair.Demo/bin/Debug/net8.0/AltairAp300.Driver.dll
+/Users/admin/Documents/AV Projects/Crestron/OnioI_TestTaskSolution/Altair.Demo/Altair.Demo/bin/Debug/net8.0/AltairAp300.Driver.pdb
+/Users/admin/Documents/AV Projects/Crestron/OnioI_TestTaskSolution/Altair.Demo/Altair.Demo/obj/Debug/net8.0/Altair.Demo.csproj.AssemblyReference.cache
+/Users/admin/Documents/AV Projects/Crestron/OnioI_TestTaskSolution/Altair.Demo/Altair.Demo/obj/Debug/net8.0/Altair.D.7BCCA342.Up2Date
