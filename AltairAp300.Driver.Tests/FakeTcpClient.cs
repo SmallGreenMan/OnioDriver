@@ -8,8 +8,23 @@ namespace AltairAp300.Driver.Tests;
 
 public class FakeTcpClient : ITcpClient
 {
+    private readonly List<string> _sentCommands = new();
+    private readonly object _lock = new();
+
     public bool IsConnected { get; private set; }
-    public List<string> SentCommands { get; } = new();
+    public IReadOnlyList<string> SentCommands
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _sentCommands.ToArray();
+            }
+        }
+    }
+
+    public bool AutoGreeting { get; set; } = true;
+    public bool SimulateDenyOnConnect { get; set; }
 
     public event EventHandler<string>? DataReceived;
     public event EventHandler? Connected;
@@ -22,6 +37,16 @@ public class FakeTcpClient : ITcpClient
     {
         IsConnected = true;
         Connected?.Invoke(this, EventArgs.Empty);
+
+        if (SimulateDenyOnConnect)
+        {
+            Task.Run(() => DataReceived?.Invoke(this, "!DENY"));
+        }
+        else if (AutoGreeting)
+        {
+            Task.Run(() => DataReceived?.Invoke(this, "!ID:AP-3000:1.07"));
+        }
+
         return Task.CompletedTask;
     }
 
@@ -34,7 +59,11 @@ public class FakeTcpClient : ITcpClient
 
     public Task SendAsync(string data, CancellationToken cancellationToken = default)
     {
-        SentCommands.Add(data);
+        lock (_lock)
+        {
+            _sentCommands.Add(data);
+        }
+
         if (AutoResponseHandler != null)
         {
             string reply = AutoResponseHandler(data);

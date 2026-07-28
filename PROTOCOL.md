@@ -38,6 +38,9 @@ when device is on, reciving not documented commands
 !SYNC:3:0\x0d\x0a
 !SYNC:3:0\x0d\x0a
 
+device ignor small % of commands, if threre no any response to the command driver repeat the command again
+
+Source cant be readed form device or changed if device is off
 
 
 

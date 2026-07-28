@@ -7,9 +7,6 @@ using System.Threading.Tasks;
 
 namespace AltairAp300.Driver;
 
-/// <summary>
-/// TCP client implementation using System.Net.Sockets.TcpClient for connecting to AP-3000 device over Ethernet.
-/// </summary>
 public class AltairTcpClient : ITcpClient
 {
     private TcpClient? _tcpClient;
@@ -39,13 +36,10 @@ public class AltairTcpClient : ITcpClient
         _reader = new StreamReader(_stream, Encoding.ASCII);
         _writer = new StreamWriter(_stream, Encoding.ASCII) { AutoFlush = true };
 
+        Connected?.Invoke(this, EventArgs.Empty);
+
         _cts = new CancellationTokenSource();
         _readTask = Task.Run(() => ReadLoopAsync(_cts.Token), _cts.Token);
-
-        // Pause 1 second after connecting
-        await Task.Delay(1000, cancellationToken);
-
-        Connected?.Invoke(this, EventArgs.Empty);
     }
 
     public async Task DisconnectAsync()
@@ -119,13 +113,6 @@ public class AltairTcpClient : ITcpClient
         {
             // Connection error
         }
-        finally
-        {
-            if (IsConnected)
-            {
-                _ = DisconnectAsync();
-            }
-        }
     }
 
     public void Dispose()
@@ -134,7 +121,6 @@ public class AltairTcpClient : ITcpClient
         _isDisposed = true;
 
         _cts?.Cancel();
-        _cts?.Dispose();
         _tcpClient?.Dispose();
         _sendSemaphore.Dispose();
         GC.SuppressFinalize(this);

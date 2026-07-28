@@ -87,7 +87,7 @@ public class AltairDriverTests
 
         PowerState result = await driver.QueryPowerAsync();
 
-        Assert.Single(fakeClient.SentCommands, "SYS:?;");
+        Assert.Contains("SYS:?;", fakeClient.SentCommands);
         Assert.Equal(PowerState.On, result);
         Assert.Equal(PowerState.On, driver.Power);
     }
@@ -121,7 +121,12 @@ public class AltairDriverTests
     {
         var fakeClient = new FakeTcpClient
         {
-            AutoResponseHandler = cmd => cmd == "SRC:3;" ? "ACK" : "NAK:10"
+            AutoResponseHandler = cmd => cmd switch
+            {
+                "SRC:3;" => "ACK",
+                "SRC:?;" => "SRC:3",
+                _ => "NAK:10"
+            }
         };
         using var driver = new AltairDriver(client: fakeClient);
         await driver.ConnectAsync("127.0.0.1");
@@ -131,7 +136,8 @@ public class AltairDriverTests
 
         await driver.SetSourceAsync(3);
 
-        Assert.Single(fakeClient.SentCommands, "SRC:3;");
+        Assert.Contains("SRC:3;", fakeClient.SentCommands);
+        Assert.Contains("SRC:?;", fakeClient.SentCommands);
         Assert.Equal(3, driver.Source);
         Assert.Equal(3, receivedSource);
     }
@@ -157,7 +163,12 @@ public class AltairDriverTests
     {
         var fakeClient = new FakeTcpClient
         {
-            AutoResponseHandler = cmd => cmd == "LGT:85;" ? "ACK" : "NAK:10"
+            AutoResponseHandler = cmd => cmd switch
+            {
+                "LGT:85;" => "ACK",
+                "LGT:?;" => "LGT:217",
+                _ => "NAK:10"
+            }
         };
         using var driver = new AltairDriver(client: fakeClient);
         await driver.ConnectAsync("127.0.0.1");
@@ -167,7 +178,8 @@ public class AltairDriverTests
 
         await driver.SetLightOutputAsync(85);
 
-        Assert.Single(fakeClient.SentCommands, "LGT:85;");
+        Assert.Contains("LGT:85;", fakeClient.SentCommands);
+        Assert.Contains("LGT:?;", fakeClient.SentCommands);
         Assert.Equal(85, driver.lightOutput);
         Assert.Equal(85, driver.LightOutput);
         Assert.Equal(85, output);
@@ -194,7 +206,12 @@ public class AltairDriverTests
     {
         var fakeClient = new FakeTcpClient
         {
-            AutoResponseHandler = cmd => cmd == "SHT:1;" ? "ACK" : "NAK:10"
+            AutoResponseHandler = cmd => cmd switch
+            {
+                "SHT:1;" => "ACK",
+                "SHT:?;" => "SHT:1",
+                _ => "NAK:10"
+            }
         };
         using var driver = new AltairDriver(client: fakeClient);
         await driver.ConnectAsync("127.0.0.1");
@@ -204,7 +221,8 @@ public class AltairDriverTests
 
         await driver.SetShutterAsync(true);
 
-        Assert.Single(fakeClient.SentCommands, "SHT:1;");
+        Assert.Contains("SHT:1;", fakeClient.SentCommands);
+        Assert.Contains("SHT:?;", fakeClient.SentCommands);
         Assert.True(driver.Shutter);
         Assert.True(shutterState);
     }
@@ -225,17 +243,69 @@ public class AltairDriverTests
         Assert.False(driver.Shutter);
     }
 
+    [Theory]
+    [InlineData("NAK:10", "10", "Unrecognized command")]
+    [InlineData("NAK:20", "20", "Parameter error")]
+    [InlineData("NAK:30", "30", "Command is available only if device is on")]
+    public void AltairNakException_FromResponse_ShouldCreateCorrectCodeAndDescription(string nakResponse, string expectedCode, string expectedDescription)
+    {
+        var ex = AltairNakException.FromResponse(nakResponse);
+
+        Assert.Equal(expectedCode, ex.NakCode);
+        Assert.Contains(expectedCode, ex.Message);
+        Assert.Contains(expectedDescription, ex.Message);
+    }
+
     [Fact]
-    public async Task SendCommand_ShouldThrowException_WhenNakErrorReceived()
+    public async Task SendCommand_ShouldHandleNotConnectedGracefully_WithoutCrashing()
+    {
+        var fakeClient = new FakeTcpClient { AutoGreeting = false };
+        using var driver = new AltairDriver(client: fakeClient);
+
+        // Calling query/control while disconnected logs error without throwing unhandled crash
+        var state = await driver.QueryPowerAsync();
+        Assert.Equal(PowerState.Off, state);
+    }
+
+    [Fact]
+    public async Task ConnectAsync_ShouldThrowException_WhenDenyReceivedAndAutoReconnectDisabled()
     {
         var fakeClient = new FakeTcpClient
         {
-            AutoResponseHandler = _ => "NAK:20"
+            SimulateDenyOnConnect = true
         };
-        using var driver = new AltairDriver(client: fakeClient);
-        await driver.ConnectAsync("127.0.0.1");
+        using var driver = new AltairDriver(autoReconnect: false, client: fakeClient);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => driver.SetLightOutputAsync(80));
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => driver.ConnectAsync("127.0.0.1"));
+
+        Assert.Equal("[CONNECT] Connection denied: Another client is Connected", ex.Message);
+        Assert.False(driver.IsConnected);
+    }
+
+    [Fact]
+    public async Task ConnectAsync_ShouldRetryReconnect_WhenDenyReceivedAndAutoReconnectEnabled()
+    {
+        var fakeClient = new FakeTcpClient
+        {
+            SimulateDenyOnConnect = true
+        };
+        using var driver = new AltairDriver(autoReconnect: true, client: fakeClient);
+        driver.InitialRecoveryReconnectDelaySeconds = 1;
+
+        // Start ConnectAsync in task
+        Task connectTask = driver.ConnectAsync("127.0.0.1");
+
+        // Allow initial deny attempt to process
+        await Task.Delay(200);
+
+        // Switch fake client to allow successful connection on next retry
+        fakeClient.SimulateDenyOnConnect = false;
+
+        // Wait for retry loop to complete
+        await Task.WhenAny(connectTask, Task.Delay(2500));
+
+        Assert.True(connectTask.IsCompletedSuccessfully);
+        Assert.True(driver.IsConnected);
     }
 
     [Fact]
@@ -280,6 +350,7 @@ public class AltairDriverTests
             {
                 "SYS:1;" => "ACK",
                 "SRC:2;" => "ACK",
+                "SRC:?;" => "SRC:2",
                 _ => "NAK:10"
             }
         };
@@ -393,5 +464,38 @@ public class AltairDriverTests
 
         Assert.Equal(PowerState.On, driver.Power);
         Assert.True(fakeClient.SentCommands.Count >= 40);
+    }
+
+    [Fact]
+    public async Task CommandsDuringInitialStateQuery_ShouldWaitUntilInitialQueryCompletes()
+    {
+        var fakeClient = new FakeTcpClient
+        {
+            AutoGreeting = false,
+            AutoResponseHandler = cmd => cmd switch
+            {
+                "SYS:?;" => "SYS:1",
+                "SRC:?;" => "SRC:1",
+                "LGT:?;" => "LGT:255",
+                "SHT:?;" => "SHT:0",
+                "SRC:2;" => "ACK",
+                _ => "ACK"
+            }
+        };
+        using var driver = new AltairDriver(client: fakeClient);
+        await driver.ConnectAsync("127.0.0.1");
+
+        // Trigger initial state query via !ID:
+        fakeClient.SimulateIncomingData("!ID:AP-3000:1.07");
+
+        // Immediately attempt user command during initial query
+        await driver.SetSourceAsync(2);
+
+        // Verify sent commands order: initial query commands come first, then SRC:2;
+        Assert.Equal("SYS:?;", fakeClient.SentCommands[0]);
+        Assert.Equal("SRC:?;", fakeClient.SentCommands[1]);
+        Assert.Equal("LGT:?;", fakeClient.SentCommands[2]);
+        Assert.Equal("SHT:?;", fakeClient.SentCommands[3]);
+        Assert.Equal("SRC:2;", fakeClient.SentCommands[4]);
     }
 }

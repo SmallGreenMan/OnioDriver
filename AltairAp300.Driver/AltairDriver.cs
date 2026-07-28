@@ -4,10 +4,7 @@ using System.Threading.Tasks;
 
 namespace AltairAp300.Driver;
 
-/// <summary>
-/// Driver for Altair AP-3000 Installation Projector.
-/// Handles sending commands, receiving responses, and maintaining projector state.
-/// </summary>
+/// Driver for Altair AP-3000 Installation Projector. Handles sending commands, receiving responses, and maintaining projector state.
 public class AltairDriver : IDisposable
 {
     private readonly ITcpClient _client;
@@ -20,174 +17,118 @@ public class AltairDriver : IDisposable
     private TaskCompletionSource<bool>? _stateTransitionTcs;
     private CancellationTokenSource? _powerPollingCts;
     private Task? _powerPollingTask;
+    private TaskCompletionSource<bool>? _connectionGreetingTcs;
+    private TaskCompletionSource<bool>? _initialQueryTcs;
     private bool _manualDisconnectRequested;
     private bool _isDisposed;
 
     #region Configuration & State Properties
 
-    /// <summary>
     /// Target IP address or hostname.
-    /// </summary>
     public string IpAddress { get; }
 
-    /// <summary>
     /// Target TCP port (default 5100).
-    /// </summary>
     public int Port { get; }
 
-    /// <summary>
     /// Command timeout in seconds.
-    /// </summary>
     public int CommandTimeout { get; }
 
-    /// <summary>
     /// Command retry attempts.
-    /// </summary>
-    public int CommandRetries { get;}
+    public int CommandRetries { get; }
 
-    /// <summary>
     /// Enable automatic reconnection on connection loss (default true).
-    /// </summary>
     public bool AutoReconnect { get; set; } = true;
 
-    /// <summary>
     /// Alias for AutoReconnect property.
-    /// </summary>
     public bool AutoReconect
     {
         get => AutoReconnect;
         set => AutoReconnect = value;
     }
 
-    /// <summary>
     /// Enable debug console output for data exchange with device (default false).
-    /// </summary>
     public bool Debug { get; set; }
 
     #endregion
 
     #region Configurable Timing & Retry Properties
 
-    /// <summary>
     /// Initial delay in seconds for auto-reconnect attempts (default: 1).
-    /// </summary>
     public int AutoReconnectInitialDelaySeconds { get; set; } = 1;
 
-    /// <summary>
     /// Maximum delay in seconds for auto-reconnect attempts (default: 60).
-    /// </summary>
     public int AutoReconnectMaxDelaySeconds { get; set; } = 60;
 
-    /// <summary>
     /// Initial reconnect delay in seconds when command recovery is triggered (default: 2).
-    /// </summary>
     public int InitialRecoveryReconnectDelaySeconds { get; set; } = 2;
 
-    /// <summary>
     /// Maximum reconnect delay in seconds when command recovery is triggered (default: 60).
-    /// </summary>
     public int MaxRecoveryReconnectDelaySeconds { get; set; } = 60;
 
-    /// <summary>
     /// Polling interval in seconds for power state during intermediate transitions (default: 3).
-    /// </summary>
     public int PowerPollingIntervalSeconds { get; set; } = 3;
 
     #endregion
 
     #region State Properties
 
-    /// <summary>
-    /// Power state: Off (0), On (1), SwitchingOn (3), SwitchingOff (4).
-    /// </summary>
+    /// Power state: Off (0), On (1), SwitchingOn (2), SwitchingOff (3).
     public PowerState Power { get; private set; } = PowerState.Off;
 
-    /// <summary>
     /// Current input source (1–4).
-    /// </summary>
     public int Source { get; private set; }
 
-    /// <summary>
     /// Current light output percentage (0–100).
-    /// </summary>
     public int lightOutput { get; private set; }
 
-    /// <summary>
     /// Alias for lightOutput property.
-    /// </summary>
     public int LightOutput => lightOutput;
 
-    /// <summary>
     /// Shutter state: true = Closed (blank), false = Open.
-    /// </summary>
     public bool Shutter { get; private set; }
     
     public string FW { get; private set; } = string.Empty;
 
-    /// <summary>
     /// Indicates connection status to the device.
-    /// </summary>
     public bool IsConnected => _client.IsConnected;
 
-    /// <summary>
     /// Firmware version of the device protocol.
-    /// </summary>
     public string FirmwareVersion { get; private set; } = "1.07";
 
     #endregion
 
     #region Events
 
-    /// <summary>
     /// Event raised when Power state changes.
-    /// </summary>
     public event Action<PowerState>? PowerStateChanged;
 
-    /// <summary>
     /// Event raised when device receives !RDY (System On).
-    /// </summary>
     public event Action? Ready;
 
-    /// <summary>
     /// Event raised when device receives !STBY (System Off).
-    /// </summary>
     public event Action? Standby;
 
-    /// <summary>
     /// Event raised when Source state changes.
-    /// </summary>
     public event Action<int>? SourceStateChanged;
 
-    /// <summary>
     /// Event raised when Shutter state changes.
-    /// </summary>
     public event Action<bool>? ShutterStateChanged;
 
-    /// <summary>
     /// Event raised when lightOutput state changes.
-    /// </summary>
     public event Action<int>? lightOutputStateChanged;
 
-    /// <summary>
     /// Event raised when connected to device.
-    /// </summary>
     public event Action? Connected;
 
-    /// <summary>
     /// Event raised when disconnected from device.
-    /// </summary>
     public event Action? Disconected;
 
-    /// <summary>
     /// Event raised when disconnected from device (standard spelling alias).
-    /// </summary>
     public event Action? Disconnected;
 
     #endregion
 
-    /// <summary>
     /// Initializes driver with target ipAddress, port, command timeout (seconds), retries, autoReconnect, debug flag, and optional ITcpClient transport.
-    /// </summary>
     public AltairDriver(
         string ipAddress = "localhost",
         int port = 5100,
@@ -217,7 +158,46 @@ public class AltairDriver : IDisposable
         _manualDisconnectRequested = false;
         string targetHost = !string.IsNullOrWhiteSpace(host) ? host : IpAddress;
         int targetPort = port ?? Port;
-        await _client.ConnectAsync(targetHost, targetPort, cancellationToken);
+
+        int cycleAttempt = 0;
+        int reconnectDelaySeconds = Math.Max(1, InitialRecoveryReconnectDelaySeconds);
+
+        while (!cancellationToken.IsCancellationRequested && !_manualDisconnectRequested && !_isDisposed)
+        {
+            _connectionGreetingTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            try
+            {
+                await _client.ConnectAsync(targetHost, targetPort, cancellationToken);
+
+                using var greetingCts = new CancellationTokenSource(TimeSpan.FromSeconds(Math.Max(3, CommandTimeout)));
+                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, greetingCts.Token);
+
+                using (linkedCts.Token.Register(() => _connectionGreetingTcs.TrySetCanceled(linkedCts.Token)))
+                {
+                    await _connectionGreetingTcs.Task;
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                _manualDisconnectRequested = true;
+                await _client.DisconnectAsync();
+                _manualDisconnectRequested = false;
+
+                if (!AutoReconnect || cancellationToken.IsCancellationRequested || _manualDisconnectRequested || _isDisposed)
+                {
+                    throw;
+                }
+
+                if (Debug) Console.WriteLine($"[RECOVERY] Connection failed or denied ({ex.Message}). Retrying in {reconnectDelaySeconds}s...");
+                await Task.Delay(TimeSpan.FromSeconds(reconnectDelaySeconds), cancellationToken);
+
+                cycleAttempt++;
+                int maxDelay = Math.Max(1, MaxRecoveryReconnectDelaySeconds);
+                reconnectDelaySeconds = Math.Min(maxDelay, reconnectDelaySeconds + cycleAttempt + 1);
+            }
+        }
     }
 
     public async Task DisconnectAsync()
@@ -302,34 +282,32 @@ public class AltairDriver : IDisposable
 
     #region State Control Methods
 
-    /// <summary>
     /// Powers the projector on (true) or off/standby (false).
-    /// </summary>
     public async Task SetPowerAsync(bool on, CancellationToken cancellationToken = default)
     {
-        string cmd = on ? "SYS:1;" : "SYS:0;";
-        string response = await SendCommandAsync(cmd, cancellationToken);
-        if (response == "ACK" || response == (on ? "SYS:1" : "SYS:0"))
+        try
         {
-            UpdatePowerState(on ? PowerState.SwitchingOn : PowerState.SwitchingOff);
-            _ = QueryPowerAsync(cancellationToken);
+            string cmd = on ? "SYS:1;" : "SYS:0;";
+            string response = await SendCommandAsync(cmd, cancellationToken);
+            if (response == "ACK" || response == (on ? "SYS:1" : "SYS:0"))
+            {
+                UpdatePowerState(on ? PowerState.SwitchingOn : PowerState.SwitchingOff);
+                _ = QueryPowerAsync(cancellationToken);
+            }
+        }
+        catch (Exception ex)
+        {
+            if (Debug) Console.WriteLine($"[ERROR] SetPowerAsync failed: {ex.Message}");
         }
     }
 
-    /// <summary>
     /// Powers the projector on asynchronously.
-    /// </summary>
     public Task PowerOnAsync(CancellationToken cancellationToken = default) => SetPowerAsync(true, cancellationToken);
 
-    /// <summary>
     /// Powers the projector off (standby) asynchronously.
-    /// </summary>
     public Task PowerOffAsync(CancellationToken cancellationToken = default) => SetPowerAsync(false, cancellationToken);
     
-
-    /// <summary>
     /// Selects input source (1–4).
-    /// </summary>
     public async Task SetSourceAsync(int source, CancellationToken cancellationToken = default)
     {
         if (source < 1 || source > 4)
@@ -337,17 +315,22 @@ public class AltairDriver : IDisposable
             throw new ArgumentOutOfRangeException(nameof(source), "Source must be between 1 and 4.");
         }
 
-        string cmd = $"SRC:{source};";
-        string response = await SendCommandAsync(cmd, cancellationToken);
-        if (response == "ACK" || response == $"SRC:{source}")
+        try
         {
-            UpdateSource(source);
+            string cmd = $"SRC:{source};";
+            string response = await SendCommandAsync(cmd, cancellationToken);
+            if (response == "ACK")
+            {
+                await QuerySourceAsync(cancellationToken);
+            }
+        }
+        catch (Exception ex)
+        {
+            if (Debug) Console.WriteLine($"[ERROR] SetSourceAsync failed: {ex.Message}");
         }
     }
 
-    /// <summary>
     /// Sets light output percentage (0–100).
-    /// </summary>
     public async Task SetLightOutputAsync(int value, CancellationToken cancellationToken = default)
     {
         if (value < 0 || value > 100)
@@ -355,24 +338,38 @@ public class AltairDriver : IDisposable
             throw new ArgumentOutOfRangeException(nameof(value), "Light output must be between 0 and 100.");
         }
 
-        string cmd = $"LGT:{value};";
-        string response = await SendCommandAsync(cmd, cancellationToken);
-        if (response == "ACK" || response == $"LGT:{value}")
+        try
         {
-            UpdatelightOutput(value);
+            string cmd = $"LGT:{value};";
+            string response = await SendCommandAsync(cmd, cancellationToken);
+            if (response == "ACK" || response == $"LGT:{value}")
+            {
+                UpdatelightOutput(value);
+                await QueryLightOutputAsync(cancellationToken);
+            }
+        }
+        catch (Exception ex)
+        {
+            if (Debug) Console.WriteLine($"[ERROR] SetLightOutputAsync failed: {ex.Message}");
         }
     }
 
-    /// <summary>
     /// Opens (false) or closes (true) the shutter.
-    /// </summary>
     public async Task SetShutterAsync(bool closed, CancellationToken cancellationToken = default)
     {
-        string cmd = closed ? "SHT:1;" : "SHT:0;";
-        string response = await SendCommandAsync(cmd, cancellationToken);
-        if (response == "ACK" || response == (closed ? "SHT:1" : "SHT:0"))
+        try
         {
-            UpdateShutter(closed);
+            string cmd = closed ? "SHT:1;" : "SHT:0;";
+            string response = await SendCommandAsync(cmd, cancellationToken);
+            if (response == "ACK" || response == (closed ? "SHT:1" : "SHT:0"))
+            {
+                UpdateShutter(closed);
+                await QueryShutterAsync(cancellationToken);
+            }
+        }
+        catch (Exception ex)
+        {
+            if (Debug) Console.WriteLine($"[ERROR] SetShutterAsync failed: {ex.Message}");
         }
     }
 
@@ -380,70 +377,88 @@ public class AltairDriver : IDisposable
 
     #region State Query Methods
 
-    /// <summary>
-    /// Queries the current power state from the projector.
-    /// Returns 0 (Off), 1 (On), 3 (SwitchingOn), 4 (SwitchingOff).
-    /// </summary>
-    public async Task<PowerState> QueryPowerAsync(CancellationToken cancellationToken = default)
+    /// Queries the current power state from the projector. Returns 0 (Off), 1 (On), 2 (SwitchingOn), 3 (SwitchingOff).
+    public async Task<PowerState> QueryPowerAsync(CancellationToken cancellationToken = default, bool isInitialQuery = false)
     {
-        string response = await SendCommandAsync("SYS:?;", cancellationToken);
-        if (response.StartsWith("SYS:") && int.TryParse(response.AsSpan(4), out int pwrCode))
+        try
         {
-            if (Enum.IsDefined(typeof(PowerState), pwrCode))
+            string response = await SendCommandAsync("SYS:?;", cancellationToken, isInitialQuery);
+            if (response.StartsWith("SYS:") && int.TryParse(response.AsSpan(4), out int pwrCode))
             {
-                var state = (PowerState)pwrCode;
-                UpdatePowerState(state);
-                return state;
+                if (Enum.IsDefined(typeof(PowerState), pwrCode))
+                {
+                    var state = (PowerState)pwrCode;
+                    UpdatePowerState(state);
+                    return state;
+                }
             }
+        }
+        catch (Exception ex)
+        {
+            if (Debug) Console.WriteLine($"[ERROR] QueryPowerAsync failed: {ex.Message}");
         }
         return Power;
     }
 
-    /// <summary>
     /// Queries the selected input source from the projector.
-    /// </summary>
-    public async Task<int> QuerySourceAsync(CancellationToken cancellationToken = default)
+    public async Task<int> QuerySourceAsync(CancellationToken cancellationToken = default, bool isInitialQuery = false)
     {
-        string response = await SendCommandAsync("SRC:?;", cancellationToken);
-        if (response.StartsWith("SRC:") && int.TryParse(response.AsSpan(4), out int src))
+        try
         {
-            UpdateSource(src);
-            return src;
+            string response = await SendCommandAsync("SRC:?;", cancellationToken, isInitialQuery);
+            if (response.StartsWith("SRC:") && int.TryParse(response.AsSpan(4), out int src))
+            {
+                UpdateSource(src);
+                return src;
+            }
+        }
+        catch (Exception ex)
+        {
+            if (Debug) Console.WriteLine($"[ERROR] QuerySourceAsync failed: {ex.Message}");
         }
         return Source;
     }
 
-    /// <summary>
-    /// Queries the light output level from the projector.
-    /// Converts raw feedback (0–255) to percentage (0–100).
-    /// </summary>
-    public async Task<int> QueryLightOutputAsync(CancellationToken cancellationToken = default)
+    /// Queries the light output level from the projector. Converts raw feedback (0–255) to percentage (0–100).
+    public async Task<int> QueryLightOutputAsync(CancellationToken cancellationToken = default, bool isInitialQuery = false)
     {
-        string response = await SendCommandAsync("LGT:?;", cancellationToken);
-        if (response.StartsWith("LGT:") && int.TryParse(response.AsSpan(4), out int rawLgt))
+        try
         {
-            int scaledLgt = ConvertRawLightOutputToPercent(rawLgt);
-            UpdatelightOutput(scaledLgt);
-            return scaledLgt;
+            string response = await SendCommandAsync("LGT:?;", cancellationToken, isInitialQuery);
+            if (response.StartsWith("LGT:") && int.TryParse(response.AsSpan(4), out int rawLgt))
+            {
+                int scaledLgt = ConvertRawLightOutputToPercent(rawLgt);
+                UpdatelightOutput(scaledLgt);
+                return scaledLgt;
+            }
+        }
+        catch (Exception ex)
+        {
+            if (Debug) Console.WriteLine($"[ERROR] QueryLightOutputAsync failed: {ex.Message}");
         }
         return lightOutput;
     }
 
-    /// <summary>
     /// Queries the shutter state from the projector.
-    /// </summary>
-    public async Task<bool> QueryShutterAsync(CancellationToken cancellationToken = default)
+    public async Task<bool> QueryShutterAsync(CancellationToken cancellationToken = default, bool isInitialQuery = false)
     {
-        string response = await SendCommandAsync("SHT:?;", cancellationToken);
-        if (response == "SHT:1")
+        try
         {
-            UpdateShutter(true);
-            return true;
+            string response = await SendCommandAsync("SHT:?;", cancellationToken, isInitialQuery);
+            if (response == "SHT:1")
+            {
+                UpdateShutter(true);
+                return true;
+            }
+            if (response == "SHT:0")
+            {
+                UpdateShutter(false);
+                return false;
+            }
         }
-        if (response == "SHT:0")
+        catch (Exception ex)
         {
-            UpdateShutter(false);
-            return false;
+            if (Debug) Console.WriteLine($"[ERROR] QueryShutterAsync failed: {ex.Message}");
         }
         return Shutter;
     }
@@ -452,8 +467,29 @@ public class AltairDriver : IDisposable
 
     #region Protocol Messaging & State Internal Handlers
 
-    private async Task<string> SendCommandAsync(string command, CancellationToken cancellationToken = default)
+    private async Task EnsureInitialQueryCompletedAsync(CancellationToken cancellationToken)
     {
+        Task? waitTask;
+        lock (_stateLock)
+        {
+            waitTask = _initialQueryTcs?.Task;
+        }
+
+        if (waitTask != null && !waitTask.IsCompleted)
+        {
+            if (Debug) Console.WriteLine("[QUEUE] Waiting for initial device state query to complete...");
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            await Task.WhenAny(waitTask, Task.Delay(Timeout.Infinite, linkedCts.Token));
+        }
+    }
+
+    private async Task<string> SendCommandAsync(string command, CancellationToken cancellationToken = default, bool isInitialQuery = false)
+    {
+        if (!isInitialQuery)
+        {
+            await EnsureInitialQueryCompletedAsync(cancellationToken);
+        }
+
         bool isPowerCommand = command.StartsWith("SYS:", StringComparison.OrdinalIgnoreCase);
 
         if (!isPowerCommand)
@@ -465,13 +501,13 @@ public class AltairDriver : IDisposable
         try
         {
             int cycleAttempt = 0;
-            int reconnectDelaySeconds = Math.Max(1, InitialRecoveryReconnectDelaySeconds);
+            int reconnectDelaySeconds = Math.Max(0, InitialRecoveryReconnectDelaySeconds);
 
             while (!cancellationToken.IsCancellationRequested && !_isDisposed)
             {
                 if (!IsConnected)
                 {
-                    throw new InvalidOperationException("TCP client is not connected to any AP-3000 device.");
+                    throw new AltairNotConnectedException();
                 }
 
                 int retries = Math.Max(1, CommandRetries);
@@ -495,9 +531,9 @@ public class AltairDriver : IDisposable
 
                             feedbackReceived = true;
 
-                            if (response.StartsWith("NAK:"))
+                            if (response.StartsWith("NAK:", StringComparison.OrdinalIgnoreCase))
                             {
-                                throw new InvalidOperationException($"Projector returned error response: {response}");
+                                throw AltairNakException.FromResponse(response);
                             }
 
                             return response;
@@ -572,6 +608,12 @@ public class AltairDriver : IDisposable
             UpdatePowerState(PowerState.Off);
             Standby?.Invoke();
         }
+        else if (trimmed.Equals("!DENY", StringComparison.OrdinalIgnoreCase))
+        {
+            isUnsolicited = true;
+            if (Debug) Console.WriteLine("[CONNECT] Connection denied: Another client is connected.");
+            _connectionGreetingTcs?.TrySetException(new InvalidOperationException("[CONNECT] Connection denied: Another client is Connected"));
+        }
         else if (trimmed.StartsWith("!ID:", StringComparison.OrdinalIgnoreCase))
         {
             isUnsolicited = true;
@@ -579,11 +621,14 @@ public class AltairDriver : IDisposable
             string fwVersion = parts.Length >= 3 ? parts[2] : (trimmed.Length >= 12 ? trimmed.Substring(12) : trimmed);
             UpdateFw(fwVersion);
 
+            Connected?.Invoke();
+            _connectionGreetingTcs?.TrySetResult(true);
+
             _ = Task.Run(async () =>
             {
                 try
                 {
-                    await QueryAllStatesAsync();
+                    await QueryAllStatesAsync(cancellationToken: CancellationToken.None, isInitialQuery: true);
                 }
                 catch (Exception ex)
                 {
@@ -757,16 +802,35 @@ public class AltairDriver : IDisposable
         }
     }
     
-    /// <summary>
     /// Queries all device states starting with SYS:?;
-    /// </summary>
-    public async Task QueryAllStatesAsync(CancellationToken cancellationToken = default)
+    public async Task QueryAllStatesAsync(CancellationToken cancellationToken = default, bool isInitialQuery = false)
     {
-        if (Debug) Console.WriteLine("[INIT] Querying all device states starting with SYS:?;");
-        await QueryPowerAsync(cancellationToken);
-        await QuerySourceAsync(cancellationToken);
-        await QueryLightOutputAsync(cancellationToken);
-        await QueryShutterAsync(cancellationToken);
+        if (isInitialQuery)
+        {
+            lock (_stateLock)
+            {
+                _initialQueryTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+        }
+
+        try
+        {
+            if (Debug) Console.WriteLine("[INIT] Querying all device states");
+            await QueryPowerAsync(cancellationToken, isInitialQuery);
+            await QuerySourceAsync(cancellationToken, isInitialQuery);
+            await QueryLightOutputAsync(cancellationToken, isInitialQuery);
+            await QueryShutterAsync(cancellationToken, isInitialQuery);
+        }
+        finally
+        {
+            if (isInitialQuery)
+            {
+                lock (_stateLock)
+                {
+                    _initialQueryTcs?.TrySetResult(true);
+                }
+            }
+        }
     }
 
     private void UpdateFw(string newFw)

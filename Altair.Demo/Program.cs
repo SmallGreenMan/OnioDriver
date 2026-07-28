@@ -24,10 +24,15 @@ Console.WriteLine($"Driver initialized for {driver.IpAddress}:{driver.Port}. Tar
 
 try
 {
+    await driver.QueryPowerAsync();
+    
     Console.WriteLine($"Attempting connection to {driver.IpAddress}:{driver.Port}...");
     await driver.ConnectAsync();
     Console.WriteLine($"IsConnected: {driver.IsConnected}");
 
+    // --- on
+    Console.WriteLine($"----> On section");
+    
     await driver.QueryPowerAsync();
     Console.WriteLine($"Power is: {driver.Power}");
     
@@ -36,13 +41,59 @@ try
         await driver.PowerOnAsync();
     }
 
+    Console.WriteLine($"----");
     await driver.QuerySourceAsync();
     Console.WriteLine($"Source is: {driver.Source}");
+    await driver.SetSourceAsync(1);
+    await driver.SetSourceAsync(2);
+    await driver.SetSourceAsync(3);
+    await driver.SetSourceAsync(4);
+    Console.WriteLine($"Source is: {driver.Source}");
     
+    Console.WriteLine($"----");
     await driver.QueryLightOutputAsync();
     Console.WriteLine($"LightOutput is: {driver.LightOutput}");
+    await driver.SetLightOutputAsync(0);
+    await driver.SetLightOutputAsync(50);
+    await driver.SetLightOutputAsync(100);
+    Console.WriteLine($"LightOutput is: {driver.LightOutput}");
     
+    Console.WriteLine($"----");
     await driver.QueryShutterAsync();
+    Console.WriteLine($"Shutter is: {driver.Shutter}");
+    await driver.SetShutterAsync(false);
+    await driver.SetShutterAsync(true);
+    Console.WriteLine($"Shutter is: {driver.Shutter}");
+    
+    // --- off
+    Console.WriteLine($"----> Off section");
+       
+    await driver.PowerOffAsync();
+    
+    await driver.QueryPowerAsync();
+    Console.WriteLine($"Power is: {driver.Power}");
+    
+    Console.WriteLine($"----");
+    await driver.QuerySourceAsync();
+    Console.WriteLine($"Source is: {driver.Source}");
+    await driver.SetSourceAsync(3);
+    await driver.SetSourceAsync(2);
+    await driver.SetSourceAsync(1);
+    Console.WriteLine($"Source is: {driver.Source}");
+    
+    Console.WriteLine($"----");
+    await driver.QueryLightOutputAsync();
+    Console.WriteLine($"LightOutput is: {driver.LightOutput}");
+    await driver.SetLightOutputAsync(100);
+    await driver.SetLightOutputAsync(50);
+    await driver.SetLightOutputAsync(0);
+    Console.WriteLine($"LightOutput is: {driver.LightOutput}");
+    
+    Console.WriteLine($"----");
+    await driver.QueryShutterAsync();
+    Console.WriteLine($"Shutter is: {driver.Shutter}");
+    await driver.SetShutterAsync(true);
+    await driver.SetShutterAsync(false);
     Console.WriteLine($"Shutter is: {driver.Shutter}");
 }
 catch (Exception ex)
