@@ -43,7 +43,7 @@ public class AltairDriverTests
         await driver.ConnectAsync("127.0.0.1");
 
         bool eventRaised = false;
-        bool powerState = false;
+        PowerState powerState = PowerState.Off;
         driver.PowerStateChanged += state =>
         {
             eventRaised = true;
@@ -53,13 +53,13 @@ public class AltairDriverTests
         await driver.SetPowerAsync(true);
 
         Assert.Single(fakeClient.SentCommands, "SYS:1;");
-        Assert.True(driver.Power);
+        Assert.Equal(PowerState.SwitchingOn, driver.Power);
         Assert.True(eventRaised);
-        Assert.True(powerState);
+        Assert.Equal(PowerState.SwitchingOn, powerState);
     }
 
     [Fact]
-    public async Task QueryPowerAsync_ShouldReturnTrueAndUpdateState_WhenProjectorReturnsSYS1()
+    public async Task QueryPowerAsync_ShouldReturnPowerStateAndUpdateState()
     {
         var fakeClient = new FakeTcpClient
         {
@@ -68,11 +68,35 @@ public class AltairDriverTests
         using var driver = new AltairDriver(client: fakeClient);
         await driver.ConnectAsync("127.0.0.1");
 
-        bool result = await driver.QueryPowerAsync();
+        PowerState result = await driver.QueryPowerAsync();
 
         Assert.Single(fakeClient.SentCommands, "SYS:?;");
-        Assert.True(result);
-        Assert.True(driver.Power);
+        Assert.Equal(PowerState.On, result);
+        Assert.Equal(PowerState.On, driver.Power);
+    }
+
+    [Fact]
+    public async Task UnsolicitedEvents_ShouldUpdatePowerState_WhenRdyOrStbyReceived()
+    {
+        var fakeClient = new FakeTcpClient();
+        using var driver = new AltairDriver(client: fakeClient);
+        await driver.ConnectAsync("127.0.0.1");
+
+        bool readyFired = false;
+        bool standbyFired = false;
+
+        driver.Ready += () => readyFired = true;
+        driver.Standby += () => standbyFired = true;
+
+        fakeClient.SimulateIncomingData("!RDY");
+
+        Assert.Equal(PowerState.On, driver.Power);
+        Assert.True(readyFired);
+
+        fakeClient.SimulateIncomingData("!STBY");
+
+        Assert.Equal(PowerState.Off, driver.Power);
+        Assert.True(standbyFired);
     }
 
     [Fact]
@@ -133,19 +157,19 @@ public class AltairDriverTests
     }
 
     [Fact]
-    public async Task QueryLightOutputAsync_ShouldReturnLightOutput()
+    public async Task QueryLightOutputAsync_ShouldReturnLightOutputScaledFrom255()
     {
         var fakeClient = new FakeTcpClient
         {
-            AutoResponseHandler = cmd => cmd == "LGT:?;" ? "LGT:75" : "NAK:10"
+            AutoResponseHandler = cmd => cmd == "LGT:?;" ? "LGT:128" : "NAK:10"
         };
         using var driver = new AltairDriver(client: fakeClient);
         await driver.ConnectAsync("127.0.0.1");
 
         int lgt = await driver.QueryLightOutputAsync();
 
-        Assert.Equal(75, lgt);
-        Assert.Equal(75, driver.lightOutput);
+        Assert.Equal(50, lgt);
+        Assert.Equal(50, driver.lightOutput);
     }
 
     [Fact]

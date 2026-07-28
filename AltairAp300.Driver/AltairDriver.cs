@@ -56,9 +56,14 @@ public class AltairDriver : IDisposable
     }
 
     /// <summary>
-    /// Power state: true = On, false = Off/Standby.
+    /// Enable debug console output for data exchange with device (default false).
     /// </summary>
-    public bool Power { get; private set; }
+    public bool Debug { get; set; }
+
+    /// <summary>
+    /// Power state: Off (0), On (1), SwitchingOn (3), SwitchingOff (4).
+    /// </summary>
+    public PowerState Power { get; private set; } = PowerState.Off;
 
     /// <summary>
     /// Current input source (1–4).
@@ -80,7 +85,7 @@ public class AltairDriver : IDisposable
     /// </summary>
     public bool Shutter { get; private set; }
     
-    public string FW{ get; private set; }
+    public string FW { get; private set; } = string.Empty;
 
     /// <summary>
     /// Indicates connection status to the device.
@@ -99,7 +104,17 @@ public class AltairDriver : IDisposable
     /// <summary>
     /// Event raised when Power state changes.
     /// </summary>
-    public event Action<bool>? PowerStateChanged;
+    public event Action<PowerState>? PowerStateChanged;
+
+    /// <summary>
+    /// Event raised when device receives !RDY (System On).
+    /// </summary>
+    public event Action? Ready;
+
+    /// <summary>
+    /// Event raised when device receives !STBY (System Off).
+    /// </summary>
+    public event Action? Standby;
 
     /// <summary>
     /// Event raised when Source state changes.
@@ -124,12 +139,17 @@ public class AltairDriver : IDisposable
     /// <summary>
     /// Event raised when disconnected from device.
     /// </summary>
+    public event Action? Disconected;
+
+    /// <summary>
+    /// Event raised when disconnected from device (standard spelling alias).
+    /// </summary>
     public event Action? Disconnected;
 
     #endregion
 
     /// <summary>
-    /// Initializes driver with target ipAddress, port, command timeout (seconds), retries, autoReconnect, and optional ITcpClient transport.
+    /// Initializes driver with target ipAddress, port, command timeout (seconds), retries, autoReconnect, debug flag, and optional ITcpClient transport.
     /// </summary>
     public AltairDriver(
         string ipAddress = "localhost",
@@ -137,6 +157,7 @@ public class AltairDriver : IDisposable
         int commandTimeout = 2,
         int commandRetries = 3,
         bool autoReconnect = true,
+        bool debug = false,
         ITcpClient? client = null)
     {
         _client = client ?? new AltairTcpClient();
@@ -145,6 +166,7 @@ public class AltairDriver : IDisposable
         CommandTimeout = commandTimeout;
         CommandRetries = commandRetries;
         AutoReconnect = autoReconnect;
+        Debug = debug;
 
         _client.DataReceived += OnDataReceived;
         _client.Connected += OnConnected;
@@ -175,6 +197,7 @@ public class AltairDriver : IDisposable
 
     private void OnDisconnected(object? sender, EventArgs e)
     {
+        Disconected?.Invoke();
         Disconnected?.Invoke();
 
         if (AutoReconnect && !_manualDisconnectRequested && !_isDisposed)
@@ -225,7 +248,7 @@ public class AltairDriver : IDisposable
             {
                 attempt++;
                 delaySeconds = Math.Min(60, delaySeconds + attempt);
-                Console.WriteLine($"[AUTO-RECONNECT] Attempt #{attempt - 1} failed ({ex.Message}). Retrying in {delaySeconds}s...");
+                if (Debug) Console.WriteLine($"[AUTO-RECONNECT] Attempt #{attempt - 1} failed ({ex.Message}). Retrying in {delaySeconds}s...");
             }
         }
     }
@@ -243,7 +266,7 @@ public class AltairDriver : IDisposable
         string response = await SendCommandAsync(cmd, cancellationToken);
         if (response == "ACK" || response == (on ? "SYS:1" : "SYS:0"))
         {
-            UpdatePower(on);
+            UpdatePowerState(on ? PowerState.SwitchingOn : PowerState.SwitchingOff);
         }
     }
 
@@ -302,19 +325,19 @@ public class AltairDriver : IDisposable
 
     /// <summary>
     /// Queries the current power state from the projector.
+    /// Returns 0 (Off), 1 (On), 3 (SwitchingOn), 4 (SwitchingOff).
     /// </summary>
-    public async Task<bool> QueryPowerAsync(CancellationToken cancellationToken = default)
+    public async Task<PowerState> QueryPowerAsync(CancellationToken cancellationToken = default)
     {
         string response = await SendCommandAsync("SYS:?;", cancellationToken);
-        if (response == "SYS:1")
+        if (response.StartsWith("SYS:") && int.TryParse(response.AsSpan(4), out int pwrCode))
         {
-            UpdatePower(true);
-            return true;
-        }
-        if (response == "SYS:0")
-        {
-            UpdatePower(false);
-            return false;
+            if (Enum.IsDefined(typeof(PowerState), pwrCode))
+            {
+                var state = (PowerState)pwrCode;
+                UpdatePowerState(state);
+                return state;
+            }
         }
         return Power;
     }
@@ -335,14 +358,16 @@ public class AltairDriver : IDisposable
 
     /// <summary>
     /// Queries the light output level from the projector.
+    /// Converts raw feedback (0–255) to percentage (0–100).
     /// </summary>
     public async Task<int> QueryLightOutputAsync(CancellationToken cancellationToken = default)
     {
         string response = await SendCommandAsync("LGT:?;", cancellationToken);
-        if (response.StartsWith("LGT:") && int.TryParse(response.AsSpan(4), out int lgt))
+        if (response.StartsWith("LGT:") && int.TryParse(response.AsSpan(4), out int rawLgt))
         {
-            UpdatelightOutput(lgt);
-            return lgt;
+            int scaledLgt = ConvertRawLightOutputToPercent(rawLgt);
+            UpdatelightOutput(scaledLgt);
+            return scaledLgt;
         }
         return lightOutput;
     }
@@ -400,7 +425,7 @@ public class AltairDriver : IDisposable
 
                         using (linkedCts.Token.Register(() => _pendingResponseTcs.TrySetCanceled(linkedCts.Token)))
                         {
-                            Console.WriteLine($"TX: {command.Trim()}");
+                            if (Debug) Console.WriteLine($"TX: {command.Trim()}");
                             await _client.SendAsync(command, cancellationToken);
                             string response = await _pendingResponseTcs.Task;
 
@@ -425,7 +450,7 @@ public class AltairDriver : IDisposable
                         {
                             throw;
                         }
-                        Console.WriteLine($"[NO FEEDBACK] Attempt {attempt}/{retries} for '{command.Trim()}' failed: {ex.Message}");
+                        if (Debug) Console.WriteLine($"[NO FEEDBACK] Attempt {attempt}/{retries} for '{command.Trim()}' failed: {ex.Message}");
                     }
                     finally
                     {
@@ -436,20 +461,20 @@ public class AltairDriver : IDisposable
                 // If after CommandRetries there was still no feedback, perform recovery cycle
                 if (!feedbackReceived)
                 {
-                    Console.WriteLine($"[RECOVERY] No feedback received after {retries} attempt(s) for '{command.Trim()}'. Disconnecting...");
+                    if (Debug) Console.WriteLine($"[RECOVERY] No feedback received after {retries} attempt(s) for '{command.Trim()}'. Disconnecting...");
 
                     _manualDisconnectRequested = true;
                     await _client.DisconnectAsync();
                     _manualDisconnectRequested = false;
 
-                    Console.WriteLine($"[RECOVERY] Waiting {reconnectDelaySeconds}s before reconnecting...");
+                    if (Debug) Console.WriteLine($"[RECOVERY] Waiting {reconnectDelaySeconds}s before reconnecting...");
                     await Task.Delay(TimeSpan.FromSeconds(reconnectDelaySeconds), cancellationToken);
 
                     // Accumulate reconnect delay for next potential cycle (capped at 60s)
                     cycleAttempt++;
                     reconnectDelaySeconds = Math.Min(60, reconnectDelaySeconds + cycleAttempt + 1);
 
-                    Console.WriteLine($"[RECOVERY] Reconnecting to target device...");
+                    if (Debug) Console.WriteLine($"[RECOVERY] Reconnecting to target device...");
                     await ConnectAsync(cancellationToken: cancellationToken);
                     // Note: ConnectAsync includes 1s pause after connection
                 }
@@ -466,13 +491,26 @@ public class AltairDriver : IDisposable
     private void OnDataReceived(object? sender, string message)
     {
         string trimmed = message.Trim();
-        Console.WriteLine($"RX: {trimmed}");
+        if (Debug) Console.WriteLine($"RX: {trimmed}");
 
-        if (trimmed.StartsWith("SYS:"))
+        if (trimmed.Equals("!RDY", StringComparison.OrdinalIgnoreCase))
         {
-            if (int.TryParse(trimmed.AsSpan(4), out int pwr))
+            UpdatePowerState(PowerState.On);
+            Ready?.Invoke();
+        }
+        else if (trimmed.Equals("!STBY", StringComparison.OrdinalIgnoreCase))
+        {
+            UpdatePowerState(PowerState.Off);
+            Standby?.Invoke();
+        }
+        else if (trimmed.StartsWith("SYS:"))
+        {
+            if (int.TryParse(trimmed.AsSpan(4), out int pwrCode))
             {
-                UpdatePower(pwr == 1);
+                if (Enum.IsDefined(typeof(PowerState), pwrCode))
+                {
+                    UpdatePowerState((PowerState)pwrCode);
+                }
             }
         }
         else if (trimmed.StartsWith("SRC:"))
@@ -484,9 +522,10 @@ public class AltairDriver : IDisposable
         }
         else if (trimmed.StartsWith("LGT:"))
         {
-            if (int.TryParse(trimmed.AsSpan(4), out int lgt))
+            if (int.TryParse(trimmed.AsSpan(4), out int rawLgt))
             {
-                UpdatelightOutput(lgt);
+                int scaledLgt = ConvertRawLightOutputToPercent(rawLgt);
+                UpdatelightOutput(scaledLgt);
             }
         }
         else if (trimmed.StartsWith("SHT:"))
@@ -506,11 +545,16 @@ public class AltairDriver : IDisposable
         _pendingResponseTcs?.TrySetResult(trimmed);
     }
 
-    private void UpdatePower(bool newPower)
+    private static int ConvertRawLightOutputToPercent(int rawValue)
     {
-        if (Power != newPower)
+        return (int)Math.Clamp(Math.Round(rawValue * 100.0 / 255.0), 0, 100);
+    }
+
+    private void UpdatePowerState(PowerState newPowerState)
+    {
+        if (Power != newPowerState)
         {
-            Power = newPower;
+            Power = newPowerState;
             PowerStateChanged?.Invoke(Power);
         }
     }

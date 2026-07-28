@@ -8,9 +8,12 @@ var ipAddress = args.Length > 0 ? args[0] : "10.211.55.3";
 var port = args.Length > 1 && int.TryParse(args[1], out var p) ? p : 5100;
 
 using var driver = new AltairDriver(ipAddress, port);
+driver.Debug = true;
 
 // Subscribe to driver state change events
-driver.PowerStateChanged += state => Console.WriteLine($"[EVENT] Power state changed: {state}");
+driver.PowerStateChanged += state => Console.WriteLine($"[EVENT] Power state changed: {state} ({(int)state})");
+driver.Ready += () => Console.WriteLine("[EVENT] Device System Ready (!RDY)");
+driver.Standby += () => Console.WriteLine("[EVENT] Device System Standby (!STBY)");
 driver.SourceStateChanged += src => Console.WriteLine($"[EVENT] Source state changed: {src}");
 driver.lightOutputStateChanged += val => Console.WriteLine($"[EVENT] Light output state changed: {val}");
 driver.ShutterStateChanged += shutter => Console.WriteLine($"[EVENT] Shutter state changed: {shutter}");
@@ -30,10 +33,19 @@ try
     await TryExecuteAsync("QuerySource", () => driver.QuerySourceAsync());
     await TryExecuteAsync("QueryLightOutput", () => driver.QueryLightOutputAsync());
     await TryExecuteAsync("QueryShutter", () => driver.QueryShutterAsync());
+    
+    await TryExecuteAsync("QueryShutter", () => driver.QueryShutterAsync());
+    
 }
 catch (Exception ex)
 {
     Console.WriteLine($"[INFO] Connection attempt result: {ex.Message}");
+}
+
+Console.WriteLine("\nPress any key to exit...");
+if (!Console.IsInputRedirected)
+{
+    Console.ReadKey(true);
 }
 
 Console.WriteLine("---> Altair AP-3000 Demo Finished <---");
