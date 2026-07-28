@@ -289,7 +289,7 @@ public class AltairDriver : IDisposable
         {
             string cmd = on ? "SYS:1;" : "SYS:0;";
             string response = await SendCommandAsync(cmd, cancellationToken);
-            if (response == "ACK" || response == (on ? "SYS:1" : "SYS:0"))
+            if (response == "ACK")
             {
                 UpdatePowerState(on ? PowerState.SwitchingOn : PowerState.SwitchingOff);
                 _ = QueryPowerAsync(cancellationToken);
@@ -342,9 +342,8 @@ public class AltairDriver : IDisposable
         {
             string cmd = $"LGT:{value};";
             string response = await SendCommandAsync(cmd, cancellationToken);
-            if (response == "ACK" || response == $"LGT:{value}")
+            if (response == "ACK")
             {
-                UpdatelightOutput(value);
                 await QueryLightOutputAsync(cancellationToken);
             }
         }
@@ -361,9 +360,8 @@ public class AltairDriver : IDisposable
         {
             string cmd = closed ? "SHT:1;" : "SHT:0;";
             string response = await SendCommandAsync(cmd, cancellationToken);
-            if (response == "ACK" || response == (closed ? "SHT:1" : "SHT:0"))
+            if (response == "ACK")
             {
-                UpdateShutter(closed);
                 await QueryShutterAsync(cancellationToken);
             }
         }

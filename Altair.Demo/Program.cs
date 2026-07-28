@@ -24,11 +24,13 @@ Console.WriteLine($"Driver initialized for {driver.IpAddress}:{driver.Port}. Tar
 
 try
 {
-    await driver.QueryPowerAsync();
+    // This Query should fail with the massage
+    await driver.QueryPowerAsync(); 
     
     Console.WriteLine($"Attempting connection to {driver.IpAddress}:{driver.Port}...");
     await driver.ConnectAsync();
     Console.WriteLine($"IsConnected: {driver.IsConnected}");
+    Console.WriteLine($"FW: {driver.FW}");
 
     // --- on
     Console.WriteLine($"----> On section");
