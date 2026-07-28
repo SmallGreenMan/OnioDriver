@@ -16,6 +16,10 @@ public class AltairDriver : IDisposable
     private readonly object _reconnectLock = new();
     private CancellationTokenSource? _reconnectCts;
     private Task? _reconnectTask;
+    private readonly object _stateLock = new();
+    private TaskCompletionSource<bool>? _stateTransitionTcs;
+    private CancellationTokenSource? _powerPollingCts;
+    private Task? _powerPollingTask;
     private bool _manualDisconnectRequested;
     private bool _isDisposed;
 
@@ -59,6 +63,39 @@ public class AltairDriver : IDisposable
     /// Enable debug console output for data exchange with device (default false).
     /// </summary>
     public bool Debug { get; set; }
+
+    #endregion
+
+    #region Configurable Timing & Retry Properties
+
+    /// <summary>
+    /// Initial delay in seconds for auto-reconnect attempts (default: 1).
+    /// </summary>
+    public int AutoReconnectInitialDelaySeconds { get; set; } = 1;
+
+    /// <summary>
+    /// Maximum delay in seconds for auto-reconnect attempts (default: 60).
+    /// </summary>
+    public int AutoReconnectMaxDelaySeconds { get; set; } = 60;
+
+    /// <summary>
+    /// Initial reconnect delay in seconds when command recovery is triggered (default: 2).
+    /// </summary>
+    public int InitialRecoveryReconnectDelaySeconds { get; set; } = 2;
+
+    /// <summary>
+    /// Maximum reconnect delay in seconds when command recovery is triggered (default: 60).
+    /// </summary>
+    public int MaxRecoveryReconnectDelaySeconds { get; set; } = 60;
+
+    /// <summary>
+    /// Polling interval in seconds for power state during intermediate transitions (default: 3).
+    /// </summary>
+    public int PowerPollingIntervalSeconds { get; set; } = 3;
+
+    #endregion
+
+    #region State Properties
 
     /// <summary>
     /// Power state: Off (0), On (1), SwitchingOn (3), SwitchingOff (4).
@@ -190,6 +227,13 @@ public class AltairDriver : IDisposable
         await _client.DisconnectAsync();
     }
 
+    public void Disconnect()
+    {
+        _manualDisconnectRequested = true;
+        _reconnectCts?.Cancel();
+        _client.DisconnectAsync().GetAwaiter().GetResult();
+    }
+
     private void OnConnected(object? sender, EventArgs e)
     {
         Connected?.Invoke();
@@ -223,7 +267,7 @@ public class AltairDriver : IDisposable
     private async Task AutoReconnectLoopAsync(CancellationToken cancellationToken)
     {
         int attempt = 1;
-        int delaySeconds = 1;
+        int delaySeconds = Math.Max(1, AutoReconnectInitialDelaySeconds);
 
         while (AutoReconnect && !_manualDisconnectRequested && !IsConnected && !cancellationToken.IsCancellationRequested && !_isDisposed)
         {
@@ -247,7 +291,8 @@ public class AltairDriver : IDisposable
             catch (Exception ex)
             {
                 attempt++;
-                delaySeconds = Math.Min(60, delaySeconds + attempt);
+                int maxDelay = Math.Max(1, AutoReconnectMaxDelaySeconds);
+                delaySeconds = Math.Min(maxDelay, delaySeconds + attempt);
                 if (Debug) Console.WriteLine($"[AUTO-RECONNECT] Attempt #{attempt - 1} failed ({ex.Message}). Retrying in {delaySeconds}s...");
             }
         }
@@ -267,8 +312,20 @@ public class AltairDriver : IDisposable
         if (response == "ACK" || response == (on ? "SYS:1" : "SYS:0"))
         {
             UpdatePowerState(on ? PowerState.SwitchingOn : PowerState.SwitchingOff);
+            _ = QueryPowerAsync(cancellationToken);
         }
     }
+
+    /// <summary>
+    /// Powers the projector on asynchronously.
+    /// </summary>
+    public Task PowerOnAsync(CancellationToken cancellationToken = default) => SetPowerAsync(true, cancellationToken);
+
+    /// <summary>
+    /// Powers the projector off (standby) asynchronously.
+    /// </summary>
+    public Task PowerOffAsync(CancellationToken cancellationToken = default) => SetPowerAsync(false, cancellationToken);
+    
 
     /// <summary>
     /// Selects input source (1–4).
@@ -397,17 +454,24 @@ public class AltairDriver : IDisposable
 
     private async Task<string> SendCommandAsync(string command, CancellationToken cancellationToken = default)
     {
+        bool isPowerCommand = command.StartsWith("SYS:", StringComparison.OrdinalIgnoreCase);
+
+        if (!isPowerCommand)
+        {
+            await EnsureOperationalStateAsync(cancellationToken);
+        }
+
         await _commandLock.WaitAsync(cancellationToken);
         try
         {
             int cycleAttempt = 0;
-            int reconnectDelaySeconds = 2; // Initial reconnect wait delay: 2 seconds
+            int reconnectDelaySeconds = Math.Max(1, InitialRecoveryReconnectDelaySeconds);
 
             while (!cancellationToken.IsCancellationRequested && !_isDisposed)
             {
                 if (!IsConnected)
                 {
-                    await ConnectAsync(cancellationToken: cancellationToken);
+                    throw new InvalidOperationException("TCP client is not connected to any AP-3000 device.");
                 }
 
                 int retries = Math.Max(1, CommandRetries);
@@ -470,9 +534,10 @@ public class AltairDriver : IDisposable
                     if (Debug) Console.WriteLine($"[RECOVERY] Waiting {reconnectDelaySeconds}s before reconnecting...");
                     await Task.Delay(TimeSpan.FromSeconds(reconnectDelaySeconds), cancellationToken);
 
-                    // Accumulate reconnect delay for next potential cycle (capped at 60s)
+                    // Accumulate reconnect delay for next potential cycle (capped at MaxRecoveryReconnectDelaySeconds)
                     cycleAttempt++;
-                    reconnectDelaySeconds = Math.Min(60, reconnectDelaySeconds + cycleAttempt + 1);
+                    int maxRecoveryDelay = Math.Max(1, MaxRecoveryReconnectDelaySeconds);
+                    reconnectDelaySeconds = Math.Min(maxRecoveryDelay, reconnectDelaySeconds + cycleAttempt + 1);
 
                     if (Debug) Console.WriteLine($"[RECOVERY] Reconnecting to target device...");
                     await ConnectAsync(cancellationToken: cancellationToken);
@@ -493,15 +558,38 @@ public class AltairDriver : IDisposable
         string trimmed = message.Trim();
         if (Debug) Console.WriteLine($"RX: {trimmed}");
 
+        bool isUnsolicited = false;
+
         if (trimmed.Equals("!RDY", StringComparison.OrdinalIgnoreCase))
         {
+            isUnsolicited = true;
             UpdatePowerState(PowerState.On);
             Ready?.Invoke();
         }
         else if (trimmed.Equals("!STBY", StringComparison.OrdinalIgnoreCase))
         {
+            isUnsolicited = true;
             UpdatePowerState(PowerState.Off);
             Standby?.Invoke();
+        }
+        else if (trimmed.StartsWith("!ID:", StringComparison.OrdinalIgnoreCase))
+        {
+            isUnsolicited = true;
+            string[] parts = trimmed.Split(':');
+            string fwVersion = parts.Length >= 3 ? parts[2] : (trimmed.Length >= 12 ? trimmed.Substring(12) : trimmed);
+            UpdateFw(fwVersion);
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await QueryAllStatesAsync();
+                }
+                catch (Exception ex)
+                {
+                    if (Debug) Console.WriteLine($"[INIT] Failed to query device states: {ex.Message}");
+                }
+            });
         }
         else if (trimmed.StartsWith("SYS:"))
         {
@@ -535,14 +623,11 @@ public class AltairDriver : IDisposable
                 UpdateShutter(sht == 1);
             }
         }
-        //     !ID:AP-3000:1.07
-        else if (trimmed.StartsWith("!ID:"))
-        {
-            var fw = trimmed.AsSpan(12).ToString();
-            UpdateFw(fw);
-        }
 
-        _pendingResponseTcs?.TrySetResult(trimmed);
+        if (!isUnsolicited)
+        {
+            _pendingResponseTcs?.TrySetResult(trimmed);
+        }
     }
 
     private static int ConvertRawLightOutputToPercent(int rawValue)
@@ -556,6 +641,92 @@ public class AltairDriver : IDisposable
         {
             Power = newPowerState;
             PowerStateChanged?.Invoke(Power);
+
+            if (Power != PowerState.On && Power != PowerState.Off)
+            {
+                EnsurePowerPollingRunning();
+            }
+            else
+            {
+                StopPowerPolling();
+
+                lock (_stateLock)
+                {
+                    _stateTransitionTcs?.TrySetResult(true);
+                    _stateTransitionTcs = null;
+                }
+            }
+        }
+    }
+
+    private async Task EnsureOperationalStateAsync(CancellationToken cancellationToken)
+    {
+        while (Power != PowerState.On && Power != PowerState.Off)
+        {
+            Task waitTask;
+            lock (_stateLock)
+            {
+                _stateTransitionTcs ??= new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                waitTask = _stateTransitionTcs.Task;
+            }
+
+            EnsurePowerPollingRunning();
+
+            int pollInterval = Math.Max(1, PowerPollingIntervalSeconds);
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            await Task.WhenAny(waitTask, Task.Delay(TimeSpan.FromSeconds(pollInterval), linkedCts.Token));
+        }
+    }
+
+    private void EnsurePowerPollingRunning()
+    {
+        lock (_stateLock)
+        {
+            if (_powerPollingTask != null && !_powerPollingTask.IsCompleted) return;
+
+            _powerPollingCts?.Cancel();
+            _powerPollingCts = new CancellationTokenSource();
+            var token = _powerPollingCts.Token;
+
+            _powerPollingTask = Task.Run(() => PowerPollingLoopAsync(token), token);
+        }
+    }
+
+    private void StopPowerPolling()
+    {
+        lock (_stateLock)
+        {
+            _powerPollingCts?.Cancel();
+            _powerPollingCts = null;
+            _powerPollingTask = null;
+        }
+    }
+
+    private async Task PowerPollingLoopAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested && !_isDisposed &&
+               Power != PowerState.On && Power != PowerState.Off)
+        {
+            try
+            {
+                int pollInterval = Math.Max(1, PowerPollingIntervalSeconds);
+                await Task.Delay(TimeSpan.FromSeconds(pollInterval), cancellationToken);
+                if (cancellationToken.IsCancellationRequested || _isDisposed) break;
+
+                if (IsConnected)
+                {
+                    if (Debug) Console.WriteLine("[POWER POLLING] Querying power state during transition...");
+                    await QueryPowerAsync(cancellationToken);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                if (Debug) Console.WriteLine($"[POWER POLLING] Query failed: {ex.Message}");
+            }
         }
     }
 
@@ -586,11 +757,24 @@ public class AltairDriver : IDisposable
         }
     }
     
+    /// <summary>
+    /// Queries all device states starting with SYS:?;
+    /// </summary>
+    public async Task QueryAllStatesAsync(CancellationToken cancellationToken = default)
+    {
+        if (Debug) Console.WriteLine("[INIT] Querying all device states starting with SYS:?;");
+        await QueryPowerAsync(cancellationToken);
+        await QuerySourceAsync(cancellationToken);
+        await QueryLightOutputAsync(cancellationToken);
+        await QueryShutterAsync(cancellationToken);
+    }
+
     private void UpdateFw(string newFw)
     {
         if (FW != newFw)
         {
             FW = newFw;
+            FirmwareVersion = newFw;
         }
     }
 
@@ -600,6 +784,9 @@ public class AltairDriver : IDisposable
     {
         if (_isDisposed) return;
         _isDisposed = true;
+
+        StopPowerPolling();
+        _reconnectCts?.Cancel();
 
         _client.DataReceived -= OnDataReceived;
         _client.Connected -= OnConnected;

@@ -28,18 +28,26 @@ try
     await driver.ConnectAsync();
     Console.WriteLine($"IsConnected: {driver.IsConnected}");
 
-    // Safely query states catching individual response errors
-    await TryExecuteAsync("QueryPower", () => driver.QueryPowerAsync());
-    await TryExecuteAsync("QuerySource", () => driver.QuerySourceAsync());
-    await TryExecuteAsync("QueryLightOutput", () => driver.QueryLightOutputAsync());
-    await TryExecuteAsync("QueryShutter", () => driver.QueryShutterAsync());
+    await driver.QueryPowerAsync();
+    Console.WriteLine($"Power is: {driver.Power}");
     
-    await TryExecuteAsync("QueryShutter", () => driver.QueryShutterAsync());
+    if (driver.IsConnected && driver.Power != PowerState.On)
+    {
+        await driver.PowerOnAsync();
+    }
+
+    await driver.QuerySourceAsync();
+    Console.WriteLine($"Source is: {driver.Source}");
     
+    await driver.QueryLightOutputAsync();
+    Console.WriteLine($"LightOutput is: {driver.LightOutput}");
+    
+    await driver.QueryShutterAsync();
+    Console.WriteLine($"Shutter is: {driver.Shutter}");
 }
 catch (Exception ex)
 {
-    Console.WriteLine($"[INFO] Connection attempt result: {ex.Message}");
+    Console.WriteLine($"[INFO] Operation result: {ex.Message}");
 }
 
 Console.WriteLine("\nPress any key to exit...");
@@ -49,15 +57,3 @@ if (!Console.IsInputRedirected)
 }
 
 Console.WriteLine("---> Altair AP-3000 Demo Finished <---");
-
-async Task TryExecuteAsync(string actionName, Func<Task> action)
-{
-    try
-    {
-        await action();
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"[{actionName}] Exception: {ex.Message}");
-    }
-}

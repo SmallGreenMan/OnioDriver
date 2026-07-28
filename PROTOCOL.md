@@ -3,6 +3,8 @@
 do not axepted \x0d or \x0a in the comments, first message axepted but next spoiled with \x0d or \x0a
 axepted several command in one packege like this - SYS:?;SRC:?;LGT:?;
 
+device reaction to the command from 50 - 270 ms
+
 device write evrithing it got to the buffer and try to execute it only after reciving delimiter - ";"
 
 got !ID:AP-3000:1.07 after connected to the device, probably 1.07 is the FW

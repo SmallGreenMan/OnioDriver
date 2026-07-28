@@ -59,6 +59,23 @@ public class AltairDriverTests
     }
 
     [Fact]
+    public async Task PowerOn_And_PowerOff_Methods_ShouldSendCorrectCommands()
+    {
+        var fakeClient = new FakeTcpClient
+        {
+            AutoResponseHandler = cmd => cmd is "SYS:1;" or "SYS:0;" or "SYS:?;" ? "ACK" : "NAK:10"
+        };
+        using var driver = new AltairDriver(client: fakeClient);
+        await driver.ConnectAsync("127.0.0.1");
+
+        await driver.PowerOnAsync();
+        Assert.Contains("SYS:1;", fakeClient.SentCommands);
+
+        await driver.PowerOffAsync();
+        Assert.Contains("SYS:0;", fakeClient.SentCommands);
+    }
+
+    [Fact]
     public async Task QueryPowerAsync_ShouldReturnPowerStateAndUpdateState()
     {
         var fakeClient = new FakeTcpClient
@@ -252,5 +269,129 @@ public class AltairDriverTests
         await Task.Delay(1500);
 
         Assert.True(driver.IsConnected);
+    }
+
+    [Fact]
+    public async Task NonPowerCommands_ShouldWait_DuringTransitionState()
+    {
+        var fakeClient = new FakeTcpClient
+        {
+            AutoResponseHandler = cmd => cmd switch
+            {
+                "SYS:1;" => "ACK",
+                "SRC:2;" => "ACK",
+                _ => "NAK:10"
+            }
+        };
+        using var driver = new AltairDriver(client: fakeClient);
+        await driver.ConnectAsync("127.0.0.1");
+
+        // Send power on -> power state transitions to SwitchingOn
+        await driver.SetPowerAsync(true);
+        Assert.Equal(PowerState.SwitchingOn, driver.Power);
+
+        // Start non-power command in task
+        Task sourceTask = driver.SetSourceAsync(2);
+        Assert.False(sourceTask.IsCompleted);
+
+        // Simulate device state becoming Ready (!RDY)
+        fakeClient.SimulateIncomingData("!RDY");
+
+        await sourceTask;
+        Assert.Equal(PowerState.On, driver.Power);
+        Assert.Equal(2, driver.Source);
+    }
+
+    [Fact]
+    public async Task DeviceIdentification_ShouldUpdateFwAndQueryAllStates_StartingWithSysPower()
+    {
+        var fakeClient = new FakeTcpClient
+        {
+            AutoResponseHandler = cmd => cmd switch
+            {
+                "SYS:?;" => "SYS:1",
+                "SRC:?;" => "SRC:2",
+                "LGT:?;" => "LGT:128",
+                "SHT:?;" => "SHT:0",
+                _ => "ACK"
+            }
+        };
+        using var driver = new AltairDriver(client: fakeClient);
+        await driver.ConnectAsync("127.0.0.1");
+
+        fakeClient.SimulateIncomingData("!ID:AP-3000:1.07");
+
+        // Allow async QueryAllStatesTask to run
+        await Task.Delay(200);
+
+        Assert.Equal("1.07", driver.FW);
+        Assert.Equal("1.07", driver.FirmwareVersion);
+
+        // Verify sent commands started with SYS:?;
+        Assert.True(fakeClient.SentCommands.Count >= 4);
+        Assert.Equal("SYS:?;", fakeClient.SentCommands[0]);
+        Assert.Contains("SRC:?;", fakeClient.SentCommands);
+        Assert.Contains("LGT:?;", fakeClient.SentCommands);
+        Assert.Contains("SHT:?;", fakeClient.SentCommands);
+    }
+
+    [Fact]
+    public async Task MultiThreaded_ConcurrentCommands_ShouldExecuteSafely_WithoutRaceConditions()
+    {
+        var fakeClient = new FakeTcpClient
+        {
+            AutoResponseHandler = cmd => cmd switch
+            {
+                "SYS:?;" => "SYS:1",
+                "SRC:?;" => "SRC:3",
+                "LGT:?;" => "LGT:255",
+                "SHT:?;" => "SHT:0",
+                "SRC:1;" => "ACK",
+                "SRC:2;" => "ACK",
+                "SRC:3;" => "ACK",
+                "SRC:4;" => "ACK",
+                "LGT:50;" => "ACK",
+                "SHT:1;" => "ACK",
+                _ => "ACK"
+            }
+        };
+        using var driver = new AltairDriver(client: fakeClient);
+        await driver.ConnectAsync("127.0.0.1");
+
+        // Set power to ON state first
+        fakeClient.SimulateIncomingData("!RDY");
+
+        // Spawn 40 parallel tasks across multiple ThreadPool threads calling driver concurrently
+        var tasks = new List<Task>();
+        for (int i = 0; i < 40; i++)
+        {
+            int index = i;
+            tasks.Add(Task.Run(async () =>
+            {
+                switch (index % 5)
+                {
+                    case 0:
+                        await driver.QueryPowerAsync();
+                        break;
+                    case 1:
+                        await driver.SetSourceAsync((index % 4) + 1);
+                        break;
+                    case 2:
+                        await driver.QuerySourceAsync();
+                        break;
+                    case 3:
+                        await driver.SetLightOutputAsync(50);
+                        break;
+                    case 4:
+                        await driver.QueryShutterAsync();
+                        break;
+                }
+            }));
+        }
+
+        await Task.WhenAll(tasks);
+
+        Assert.Equal(PowerState.On, driver.Power);
+        Assert.True(fakeClient.SentCommands.Count >= 40);
     }
 }
