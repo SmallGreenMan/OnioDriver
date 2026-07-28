@@ -13,6 +13,10 @@ public class AltairDriver : IDisposable
     private readonly ITcpClient _client;
     private readonly SemaphoreSlim _commandLock = new(1, 1);
     private TaskCompletionSource<string>? _pendingResponseTcs;
+    private readonly object _reconnectLock = new();
+    private CancellationTokenSource? _reconnectCts;
+    private Task? _reconnectTask;
+    private bool _manualDisconnectRequested;
     private bool _isDisposed;
 
     #region Configuration & State Properties
@@ -20,22 +24,36 @@ public class AltairDriver : IDisposable
     /// <summary>
     /// Target IP address or hostname.
     /// </summary>
-    public string IpAddress { get; set; }
+    public string IpAddress { get; }
 
     /// <summary>
     /// Target TCP port (default 5100).
     /// </summary>
-    public int Port { get; set; }
+    public int Port { get; }
 
     /// <summary>
     /// Command timeout in seconds.
     /// </summary>
-    public int CommandTimeout { get; set; }
+    public int CommandTimeout { get; }
 
     /// <summary>
     /// Command retry attempts.
     /// </summary>
-    public int CommandRetries { get; set; }
+    public int CommandRetries { get;}
+
+    /// <summary>
+    /// Enable automatic reconnection on connection loss (default true).
+    /// </summary>
+    public bool AutoReconnect { get; set; } = true;
+
+    /// <summary>
+    /// Alias for AutoReconnect property.
+    /// </summary>
+    public bool AutoReconect
+    {
+        get => AutoReconnect;
+        set => AutoReconnect = value;
+    }
 
     /// <summary>
     /// Power state: true = On, false = Off/Standby.
@@ -61,6 +79,8 @@ public class AltairDriver : IDisposable
     /// Shutter state: true = Closed (blank), false = Open.
     /// </summary>
     public bool Shutter { get; private set; }
+    
+    public string FW{ get; private set; }
 
     /// <summary>
     /// Indicates connection status to the device.
@@ -104,23 +124,19 @@ public class AltairDriver : IDisposable
     /// <summary>
     /// Event raised when disconnected from device.
     /// </summary>
-    public event Action? Disconected;
-
-    /// <summary>
-    /// Event raised when disconnected from device (standard spelling alias).
-    /// </summary>
     public event Action? Disconnected;
 
     #endregion
 
     /// <summary>
-    /// Initializes driver with target ipAddress, port, command timeout (seconds), retries, and optional ITcpClient transport.
+    /// Initializes driver with target ipAddress, port, command timeout (seconds), retries, autoReconnect, and optional ITcpClient transport.
     /// </summary>
     public AltairDriver(
         string ipAddress = "localhost",
         int port = 5100,
-        int commandTimeout = 5,
-        int commandRetries = 5,
+        int commandTimeout = 2,
+        int commandRetries = 3,
+        bool autoReconnect = true,
         ITcpClient? client = null)
     {
         _client = client ?? new AltairTcpClient();
@@ -128,6 +144,7 @@ public class AltairDriver : IDisposable
         Port = port;
         CommandTimeout = commandTimeout;
         CommandRetries = commandRetries;
+        AutoReconnect = autoReconnect;
 
         _client.DataReceived += OnDataReceived;
         _client.Connected += OnConnected;
@@ -138,6 +155,7 @@ public class AltairDriver : IDisposable
 
     public async Task ConnectAsync(string? host = null, int? port = null, CancellationToken cancellationToken = default)
     {
+        _manualDisconnectRequested = false;
         string targetHost = !string.IsNullOrWhiteSpace(host) ? host : IpAddress;
         int targetPort = port ?? Port;
         await _client.ConnectAsync(targetHost, targetPort, cancellationToken);
@@ -145,6 +163,8 @@ public class AltairDriver : IDisposable
 
     public async Task DisconnectAsync()
     {
+        _manualDisconnectRequested = true;
+        _reconnectCts?.Cancel();
         await _client.DisconnectAsync();
     }
 
@@ -155,8 +175,59 @@ public class AltairDriver : IDisposable
 
     private void OnDisconnected(object? sender, EventArgs e)
     {
-        Disconected?.Invoke();
         Disconnected?.Invoke();
+
+        if (AutoReconnect && !_manualDisconnectRequested && !_isDisposed)
+        {
+            StartAutoReconnect();
+        }
+    }
+
+    private void StartAutoReconnect()
+    {
+        lock (_reconnectLock)
+        {
+            if (_reconnectTask != null && !_reconnectTask.IsCompleted) return;
+
+            _reconnectCts?.Cancel();
+            _reconnectCts = new CancellationTokenSource();
+            var token = _reconnectCts.Token;
+
+            _reconnectTask = Task.Run(() => AutoReconnectLoopAsync(token), token);
+        }
+    }
+
+    private async Task AutoReconnectLoopAsync(CancellationToken cancellationToken)
+    {
+        int attempt = 1;
+        int delaySeconds = 1;
+
+        while (AutoReconnect && !_manualDisconnectRequested && !IsConnected && !cancellationToken.IsCancellationRequested && !_isDisposed)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(delaySeconds), cancellationToken);
+
+                if (cancellationToken.IsCancellationRequested || _manualDisconnectRequested) break;
+
+                await ConnectAsync(cancellationToken: cancellationToken);
+
+                if (IsConnected)
+                {
+                    break;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                attempt++;
+                delaySeconds = Math.Min(60, delaySeconds + attempt);
+                Console.WriteLine($"[AUTO-RECONNECT] Attempt #{attempt - 1} failed ({ex.Message}). Retrying in {delaySeconds}s...");
+            }
+        }
     }
 
     #endregion
@@ -176,8 +247,6 @@ public class AltairDriver : IDisposable
         }
     }
 
-    public Task PowerAsync(bool on, CancellationToken cancellationToken = default) => SetPowerAsync(on, cancellationToken);
-
     /// <summary>
     /// Selects input source (1–4).
     /// </summary>
@@ -195,8 +264,6 @@ public class AltairDriver : IDisposable
             UpdateSource(source);
         }
     }
-
-    public Task SourceAsync(int source, CancellationToken cancellationToken = default) => SetSourceAsync(source, cancellationToken);
 
     /// <summary>
     /// Sets light output percentage (0–100).
@@ -216,8 +283,6 @@ public class AltairDriver : IDisposable
         }
     }
 
-    public Task LightOutputAsync(int value, CancellationToken cancellationToken = default) => SetLightOutputAsync(value, cancellationToken);
-
     /// <summary>
     /// Opens (false) or closes (true) the shutter.
     /// </summary>
@@ -230,8 +295,6 @@ public class AltairDriver : IDisposable
             UpdateShutter(closed);
         }
     }
-
-    public Task ShutterAsync(bool closed, CancellationToken cancellationToken = default) => SetShutterAsync(closed, cancellationToken);
 
     #endregion
 
@@ -256,8 +319,6 @@ public class AltairDriver : IDisposable
         return Power;
     }
 
-    public Task<bool> GetPowerAsync(CancellationToken cancellationToken = default) => QueryPowerAsync(cancellationToken);
-
     /// <summary>
     /// Queries the selected input source from the projector.
     /// </summary>
@@ -272,8 +333,6 @@ public class AltairDriver : IDisposable
         return Source;
     }
 
-    public Task<int> GetSourceAsync(CancellationToken cancellationToken = default) => QuerySourceAsync(cancellationToken);
-
     /// <summary>
     /// Queries the light output level from the projector.
     /// </summary>
@@ -287,8 +346,6 @@ public class AltairDriver : IDisposable
         }
         return lightOutput;
     }
-
-    public Task<int> GetLightOutputAsync(CancellationToken cancellationToken = default) => QueryLightOutputAsync(cancellationToken);
 
     /// <summary>
     /// Queries the shutter state from the projector.
@@ -309,8 +366,6 @@ public class AltairDriver : IDisposable
         return Shutter;
     }
 
-    public Task<bool> GetShutterAsync(CancellationToken cancellationToken = default) => QueryShutterAsync(cancellationToken);
-
     #endregion
 
     #region Protocol Messaging & State Internal Handlers
@@ -320,58 +375,87 @@ public class AltairDriver : IDisposable
         await _commandLock.WaitAsync(cancellationToken);
         try
         {
-            if (!IsConnected)
-            {
-                await ConnectAsync(cancellationToken: cancellationToken);
-            }
+            int cycleAttempt = 0;
+            int reconnectDelaySeconds = 2; // Initial reconnect wait delay: 2 seconds
 
-            int retries = Math.Max(1, CommandRetries);
-            int timeoutSeconds = Math.Max(1, CommandTimeout);
-            Exception? lastException = null;
-
-            for (int attempt = 1; attempt <= retries; attempt++)
+            while (!cancellationToken.IsCancellationRequested && !_isDisposed)
             {
-                try
+                if (!IsConnected)
                 {
-                    _pendingResponseTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    await ConnectAsync(cancellationToken: cancellationToken);
+                }
 
-                    using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
-                    using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+                int retries = Math.Max(1, CommandRetries);
+                int timeoutSeconds = Math.Max(1, CommandTimeout);
+                bool feedbackReceived = false;
 
-                    using (linkedCts.Token.Register(() => _pendingResponseTcs.TrySetCanceled(linkedCts.Token)))
+                for (int attempt = 1; attempt <= retries; attempt++)
+                {
+                    try
                     {
-                        Console.WriteLine($"TX: {command.Trim()}");
-                        await _client.SendAsync(command, cancellationToken);
-                        string response = await _pendingResponseTcs.Task;
+                        _pendingResponseTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-                        if (response.StartsWith("NAK:"))
+                        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+                        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+
+                        using (linkedCts.Token.Register(() => _pendingResponseTcs.TrySetCanceled(linkedCts.Token)))
                         {
-                            throw new InvalidOperationException($"Projector returned error response: {response}");
-                        }
+                            Console.WriteLine($"TX: {command.Trim()}");
+                            await _client.SendAsync(command, cancellationToken);
+                            string response = await _pendingResponseTcs.Task;
 
-                        return response;
+                            feedbackReceived = true;
+
+                            if (response.StartsWith("NAK:"))
+                            {
+                                throw new InvalidOperationException($"Projector returned error response: {response}");
+                            }
+
+                            return response;
+                        }
                     }
-                }
-                catch (InvalidOperationException)
-                {
-                    // Immediate rethrow for protocol NAK errors or explicit invalid operation errors
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    lastException = ex;
-                    if (cancellationToken.IsCancellationRequested)
+                    catch (InvalidOperationException)
                     {
+                        // Protocol NAK error received from device -> feedback was received, rethrow exception
                         throw;
                     }
+                    catch (Exception ex)
+                    {
+                        if (cancellationToken.IsCancellationRequested)
+                        {
+                            throw;
+                        }
+                        Console.WriteLine($"[NO FEEDBACK] Attempt {attempt}/{retries} for '{command.Trim()}' failed: {ex.Message}");
+                    }
+                    finally
+                    {
+                        _pendingResponseTcs = null;
+                    }
                 }
-                finally
+
+                // If after CommandRetries there was still no feedback, perform recovery cycle
+                if (!feedbackReceived)
                 {
-                    _pendingResponseTcs = null;
+                    Console.WriteLine($"[RECOVERY] No feedback received after {retries} attempt(s) for '{command.Trim()}'. Disconnecting...");
+
+                    _manualDisconnectRequested = true;
+                    await _client.DisconnectAsync();
+                    _manualDisconnectRequested = false;
+
+                    Console.WriteLine($"[RECOVERY] Waiting {reconnectDelaySeconds}s before reconnecting...");
+                    await Task.Delay(TimeSpan.FromSeconds(reconnectDelaySeconds), cancellationToken);
+
+                    // Accumulate reconnect delay for next potential cycle (capped at 60s)
+                    cycleAttempt++;
+                    reconnectDelaySeconds = Math.Min(60, reconnectDelaySeconds + cycleAttempt + 1);
+
+                    Console.WriteLine($"[RECOVERY] Reconnecting to target device...");
+                    await ConnectAsync(cancellationToken: cancellationToken);
+                    // Note: ConnectAsync includes 1s pause after connection
                 }
             }
 
-            throw new TimeoutException($"Command '{command}' timed out after {retries} attempt(s).", lastException);
+            throw new OperationCanceledException(cancellationToken);
         }
         finally
         {
@@ -412,6 +496,12 @@ public class AltairDriver : IDisposable
                 UpdateShutter(sht == 1);
             }
         }
+        //     !ID:AP-3000:1.07
+        else if (trimmed.StartsWith("!ID:"))
+        {
+            var fw = trimmed.AsSpan(12).ToString();
+            UpdateFw(fw);
+        }
 
         _pendingResponseTcs?.TrySetResult(trimmed);
     }
@@ -449,6 +539,14 @@ public class AltairDriver : IDisposable
         {
             Shutter = newShutter;
             ShutterStateChanged?.Invoke(Shutter);
+        }
+    }
+    
+    private void UpdateFw(string newFw)
+    {
+        if (FW != newFw)
+        {
+            FW = newFw;
         }
     }
 

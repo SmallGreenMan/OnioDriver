@@ -15,7 +15,7 @@ driver.SourceStateChanged += src => Console.WriteLine($"[EVENT] Source state cha
 driver.lightOutputStateChanged += val => Console.WriteLine($"[EVENT] Light output state changed: {val}");
 driver.ShutterStateChanged += shutter => Console.WriteLine($"[EVENT] Shutter state changed: {shutter}");
 driver.Connected += () => Console.WriteLine("[EVENT] Connected to AP-3000 Projector");
-driver.Disconected += () => Console.WriteLine("[EVENT] Disconnected from AP-3000 Projector");
+driver.Disconnected += () => Console.WriteLine("[EVENT] Disconnected from AP-3000 Projector");
 
 Console.WriteLine($"Driver initialized for {driver.IpAddress}:{driver.Port}. Target FW Version: {driver.FirmwareVersion}");
 
@@ -25,11 +25,11 @@ try
     await driver.ConnectAsync();
     Console.WriteLine($"IsConnected: {driver.IsConnected}");
 
-    // Query initial states
-    await driver.QueryPowerAsync();
-    await driver.QuerySourceAsync();
-    await driver.QueryLightOutputAsync();
-    await driver.QueryShutterAsync();
+    // Safely query states catching individual response errors
+    await TryExecuteAsync("QueryPower", () => driver.QueryPowerAsync());
+    await TryExecuteAsync("QuerySource", () => driver.QuerySourceAsync());
+    await TryExecuteAsync("QueryLightOutput", () => driver.QueryLightOutputAsync());
+    await TryExecuteAsync("QueryShutter", () => driver.QueryShutterAsync());
 }
 catch (Exception ex)
 {
@@ -37,3 +37,15 @@ catch (Exception ex)
 }
 
 Console.WriteLine("---> Altair AP-3000 Demo Finished <---");
+
+async Task TryExecuteAsync(string actionName, Func<Task> action)
+{
+    try
+    {
+        await action();
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[{actionName}] Exception: {ex.Message}");
+    }
+}

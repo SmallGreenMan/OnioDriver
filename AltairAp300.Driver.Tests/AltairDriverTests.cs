@@ -201,11 +201,32 @@ public class AltairDriverTests
     public void Constructor_ShouldAcceptCustomParameters()
     {
         var fakeClient = new FakeTcpClient();
-        using var driver = new AltairDriver(ipAddress: "192.168.1.100", port: 5105, commandTimeout: 10, commandRetries: 3, client: fakeClient);
+        using var driver = new AltairDriver(ipAddress: "192.168.1.100", port: 5105, commandTimeout: 10, commandRetries: 3, autoReconnect: true, client: fakeClient);
 
         Assert.Equal("192.168.1.100", driver.IpAddress);
         Assert.Equal(5105, driver.Port);
         Assert.Equal(10, driver.CommandTimeout);
         Assert.Equal(3, driver.CommandRetries);
+        Assert.True(driver.AutoReconnect);
+        Assert.True(driver.AutoReconect);
+    }
+
+    [Fact]
+    public async Task AutoReconnect_ShouldAttemptReconnect_OnUnexpectedDisconnect()
+    {
+        var fakeClient = new FakeTcpClient();
+        using var driver = new AltairDriver(autoReconnect: true, client: fakeClient);
+
+        await driver.ConnectAsync("127.0.0.1");
+        Assert.True(driver.IsConnected);
+
+        // Simulate unexpected disconnection from server/transport
+        await fakeClient.DisconnectAsync();
+        Assert.False(driver.IsConnected);
+
+        // Wait for auto-reconnect attempt (1s delay)
+        await Task.Delay(1500);
+
+        Assert.True(driver.IsConnected);
     }
 }
