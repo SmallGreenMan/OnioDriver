@@ -81,6 +81,12 @@ public class FakeTcpClient : ITcpClient
         DataReceived?.Invoke(this, data);
     }
 
+    public void SimulateRemoteDisconnect()
+    {
+        IsConnected = false;
+        Disconnected?.Invoke(this, EventArgs.Empty);
+    }
+
     public void Dispose()
     {
         IsConnected = false;

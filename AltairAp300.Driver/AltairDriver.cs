@@ -72,35 +72,39 @@ public class AltairDriver : IDisposable
 
     #region State Properties
 
-    /// Power state: Off (0), On (1), SwitchingOn (2), SwitchingOff (3).
-    public PowerState Power { get; private set; } = PowerState.Off;
+    /// Power state: Unknown (null), Off (0), On (1), SwitchingOn (2), SwitchingOff (3).
+    public PowerState? Power { get; private set; }
 
-    /// Current input source (1–4).
-    public int Source { get; private set; }
+    /// Current input source (1–4) or null if unknown.
+    public int? Source { get; private set; }
 
-    /// Current light output percentage (0–100).
-    public int lightOutput { get; private set; }
+    /// Current light output percentage (0–100) or null if unknown.
+    public int? lightOutput { get; private set; }
 
     /// Alias for lightOutput property.
-    public int LightOutput => lightOutput;
+    public int? LightOutput => lightOutput;
 
-    /// Shutter state: true = Closed (blank), false = Open.
-    public bool Shutter { get; private set; }
+    /// Shutter state: true = Closed (blank), false = Open, null = Unknown.
+    public bool? Shutter { get; private set; }
     
     public string FW { get; private set; } = string.Empty;
 
-    /// Indicates connection status to the device.
+    /// Indicates fiscal connection status to the device.
     public bool IsConnected => _client.IsConnected;
-
+    
+    /// Indicates whether initial device state polling has completed and the driver is ready (Logical connection status).
+    public bool DeviceIsReady { get; private set; }
+    
     /// Firmware version of the device protocol.
     public string FirmwareVersion { get; private set; } = "1.07";
+
 
     #endregion
 
     #region Events
 
     /// Event raised when Power state changes.
-    public event Action<PowerState>? PowerStateChanged;
+    public event Action<PowerState?>? PowerStateChanged;
 
     /// Event raised when device receives !RDY (System On).
     public event Action? Ready;
@@ -109,13 +113,13 @@ public class AltairDriver : IDisposable
     public event Action? Standby;
 
     /// Event raised when Source state changes.
-    public event Action<int>? SourceStateChanged;
+    public event Action<int?>? SourceStateChanged;
 
     /// Event raised when Shutter state changes.
-    public event Action<bool>? ShutterStateChanged;
+    public event Action<bool?>? ShutterStateChanged;
 
     /// Event raised when lightOutput state changes.
-    public event Action<int>? lightOutputStateChanged;
+    public event Action<int?>? lightOutputStateChanged;
 
     /// Event raised when connected to device.
     public event Action? Connected;
@@ -125,6 +129,9 @@ public class AltairDriver : IDisposable
 
     /// Event raised when disconnected from device (standard spelling alias).
     public event Action? Disconnected;
+
+    /// Event raised when initial state query completes (true) or when device disconnects (false).
+    public event Action<bool>? DeviceIsReadyChanged;
 
     #endregion
 
@@ -204,6 +211,7 @@ public class AltairDriver : IDisposable
     {
         _manualDisconnectRequested = true;
         _reconnectCts?.Cancel();
+        UpdateDeviceIsReady(false);
         await _client.DisconnectAsync();
     }
 
@@ -211,6 +219,7 @@ public class AltairDriver : IDisposable
     {
         _manualDisconnectRequested = true;
         _reconnectCts?.Cancel();
+        UpdateDeviceIsReady(false);
         _client.DisconnectAsync().GetAwaiter().GetResult();
     }
 
@@ -221,6 +230,7 @@ public class AltairDriver : IDisposable
 
     private void OnDisconnected(object? sender, EventArgs e)
     {
+        UpdateDeviceIsReady(false);
         Disconected?.Invoke();
         Disconnected?.Invoke();
 
@@ -375,8 +385,8 @@ public class AltairDriver : IDisposable
 
     #region State Query Methods
 
-    /// Queries the current power state from the projector. Returns 0 (Off), 1 (On), 2 (SwitchingOn), 3 (SwitchingOff).
-    public async Task<PowerState> QueryPowerAsync(CancellationToken cancellationToken = default, bool isInitialQuery = false)
+    /// Queries the current power state from the projector. Returns 0 (Off), 1 (On), 2 (SwitchingOn), 3 (SwitchingOff), or null if unknown.
+    public async Task<PowerState?> QueryPowerAsync(CancellationToken cancellationToken = default, bool isInitialQuery = false)
     {
         try
         {
@@ -399,7 +409,7 @@ public class AltairDriver : IDisposable
     }
 
     /// Queries the selected input source from the projector.
-    public async Task<int> QuerySourceAsync(CancellationToken cancellationToken = default, bool isInitialQuery = false)
+    public async Task<int?> QuerySourceAsync(CancellationToken cancellationToken = default, bool isInitialQuery = false)
     {
         try
         {
@@ -418,7 +428,7 @@ public class AltairDriver : IDisposable
     }
 
     /// Queries the light output level from the projector. Converts raw feedback (0–255) to percentage (0–100).
-    public async Task<int> QueryLightOutputAsync(CancellationToken cancellationToken = default, bool isInitialQuery = false)
+    public async Task<int?> QueryLightOutputAsync(CancellationToken cancellationToken = default, bool isInitialQuery = false)
     {
         try
         {
@@ -438,7 +448,7 @@ public class AltairDriver : IDisposable
     }
 
     /// Queries the shutter state from the projector.
-    public async Task<bool> QueryShutterAsync(CancellationToken cancellationToken = default, bool isInitialQuery = false)
+    public async Task<bool?> QueryShutterAsync(CancellationToken cancellationToken = default, bool isInitialQuery = false)
     {
         try
         {
@@ -678,7 +688,7 @@ public class AltairDriver : IDisposable
         return (int)Math.Clamp(Math.Round(rawValue * 100.0 / 255.0), 0, 100);
     }
 
-    private void UpdatePowerState(PowerState newPowerState)
+    private void UpdatePowerState(PowerState? newPowerState)
     {
         if (Power != newPowerState)
         {
@@ -687,7 +697,10 @@ public class AltairDriver : IDisposable
 
             if (Power != PowerState.On && Power != PowerState.Off)
             {
-                EnsurePowerPollingRunning();
+                if (Power.HasValue)
+                {
+                    EnsurePowerPollingRunning();
+                }
             }
             else
             {
@@ -773,7 +786,7 @@ public class AltairDriver : IDisposable
         }
     }
 
-    private void UpdateSource(int newSource)
+    private void UpdateSource(int? newSource)
     {
         if (Source != newSource)
         {
@@ -782,7 +795,7 @@ public class AltairDriver : IDisposable
         }
     }
 
-    private void UpdatelightOutput(int newLightOutput)
+    private void UpdatelightOutput(int? newLightOutput)
     {
         if (lightOutput != newLightOutput)
         {
@@ -791,13 +804,21 @@ public class AltairDriver : IDisposable
         }
     }
 
-    private void UpdateShutter(bool newShutter)
+    private void UpdateShutter(bool? newShutter)
     {
         if (Shutter != newShutter)
         {
             Shutter = newShutter;
             ShutterStateChanged?.Invoke(Shutter);
         }
+    }
+
+    private void ResetStates()
+    {
+        UpdatePowerState(null);
+        UpdateSource(null);
+        UpdatelightOutput(null);
+        UpdateShutter(null);
     }
     
     /// Queries all device states starting with SYS:?;
@@ -818,6 +839,11 @@ public class AltairDriver : IDisposable
             await QuerySourceAsync(cancellationToken, isInitialQuery);
             await QueryLightOutputAsync(cancellationToken, isInitialQuery);
             await QueryShutterAsync(cancellationToken, isInitialQuery);
+
+            if (isInitialQuery && IsConnected)
+            {
+                UpdateDeviceIsReady(true);
+            }
         }
         finally
         {
@@ -828,6 +854,19 @@ public class AltairDriver : IDisposable
                     _initialQueryTcs?.TrySetResult(true);
                 }
             }
+        }
+    }
+
+    private void UpdateDeviceIsReady(bool isReady)
+    {
+        if (DeviceIsReady != isReady)
+        {
+            DeviceIsReady = isReady;
+            if (!isReady)
+            {
+                ResetStates();
+            }
+            DeviceIsReadyChanged?.Invoke(DeviceIsReady);
         }
     }
 

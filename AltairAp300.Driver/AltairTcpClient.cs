@@ -83,6 +83,11 @@ public class AltairTcpClient : ITcpClient
             await _writer.WriteAsync(data.AsMemory(), cancellationToken);
             await _writer.FlushAsync(cancellationToken);
         }
+        catch (Exception)
+        {
+            _ = DisconnectAsync();
+            throw;
+        }
         finally
         {
             _sendSemaphore.Release();
@@ -112,6 +117,13 @@ public class AltairTcpClient : ITcpClient
         catch
         {
             // Connection error
+        }
+        finally
+        {
+            if (!cancellationToken.IsCancellationRequested)
+            {
+                _ = DisconnectAsync();
+            }
         }
     }
 

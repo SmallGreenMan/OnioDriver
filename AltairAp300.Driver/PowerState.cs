@@ -3,6 +3,9 @@ namespace AltairAp300.Driver;
 /// Represents the power state of the Altair AP-3000 projector.
 public enum PowerState
 {
+    /// Device power state is unknown (-1).
+    Unknown = -1,
+
     /// Device is powered off / standby (0).
     Off = 0,
 

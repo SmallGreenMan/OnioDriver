@@ -14,6 +14,8 @@ driver.Debug = true;
 driver.PowerStateChanged += state => Console.WriteLine($"[EVENT] Power state changed: {state} ({(int)state})");
 driver.Ready += () => Console.WriteLine("[EVENT] Device System Ready (!RDY)");
 driver.Standby += () => Console.WriteLine("[EVENT] Device System Standby (!STBY)");
+driver.DeviceIsReadyChanged += state => Console.WriteLine($"[EVENT] Device is Ready changed: {state}");
+
 driver.SourceStateChanged += src => Console.WriteLine($"[EVENT] Source state changed: {src}");
 driver.lightOutputStateChanged += val => Console.WriteLine($"[EVENT] Light output state changed: {val}");
 driver.ShutterStateChanged += shutter => Console.WriteLine($"[EVENT] Shutter state changed: {shutter}");
@@ -31,6 +33,11 @@ try
     await driver.ConnectAsync();
     Console.WriteLine($"IsConnected: {driver.IsConnected}");
     Console.WriteLine($"FW: {driver.FW}");
+    
+    Console.WriteLine($"Power is: {driver.Power}");
+    Console.WriteLine($"Source is: {driver.Source}");
+    Console.WriteLine($"LightOutput is: {driver.LightOutput}");
+    Console.WriteLine($"Shutter is: {driver.Shutter}");
 
     // --- on
     Console.WriteLine($"----> On section");
