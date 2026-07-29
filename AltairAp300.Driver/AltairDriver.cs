@@ -123,6 +123,7 @@ public class AltairDriver : IDisposable
 
     /// Event raised when connected to device.
     public event Action? Connected;
+    
 
     /// Event raised when disconnected from device.
     public event Action? Disconected;
@@ -188,9 +189,7 @@ public class AltairDriver : IDisposable
             }
             catch (Exception ex)
             {
-                _manualDisconnectRequested = true;
                 await _client.DisconnectAsync();
-                _manualDisconnectRequested = false;
 
                 if (!AutoReconnect || cancellationToken.IsCancellationRequested || _manualDisconnectRequested || _isDisposed)
                 {
@@ -231,8 +230,8 @@ public class AltairDriver : IDisposable
     private void OnDisconnected(object? sender, EventArgs e)
     {
         UpdateDeviceIsReady(false);
-        Disconected?.Invoke();
-        Disconnected?.Invoke();
+        SafeInvoke(() => Disconected?.Invoke());
+        SafeInvoke(() => Disconnected?.Invoke());
 
         if (AutoReconnect && !_manualDisconnectRequested && !_isDisposed)
         {
@@ -571,9 +570,7 @@ public class AltairDriver : IDisposable
                 {
                     if (Debug) Console.WriteLine($"[RECOVERY] No feedback received after {retries} attempt(s) for '{command.Trim()}'. Disconnecting...");
 
-                    _manualDisconnectRequested = true;
                     await _client.DisconnectAsync();
-                    _manualDisconnectRequested = false;
 
                     if (Debug) Console.WriteLine($"[RECOVERY] Waiting {reconnectDelaySeconds}s before reconnecting...");
                     await Task.Delay(TimeSpan.FromSeconds(reconnectDelaySeconds), cancellationToken);
@@ -628,8 +625,7 @@ public class AltairDriver : IDisposable
             string[] parts = trimmed.Split(':');
             string fwVersion = parts.Length >= 3 ? parts[2] : (trimmed.Length >= 12 ? trimmed.Substring(12) : trimmed);
             UpdateFw(fwVersion);
-
-            Connected?.Invoke();
+            
             _connectionGreetingTcs?.TrySetResult(true);
 
             _ = Task.Run(async () =>
@@ -688,12 +684,24 @@ public class AltairDriver : IDisposable
         return (int)Math.Clamp(Math.Round(rawValue * 100.0 / 255.0), 0, 100);
     }
 
+    private void SafeInvoke(Action action)
+    {
+        try
+        {
+            action();
+        }
+        catch (Exception ex)
+        {
+            if (Debug) Console.WriteLine($"[EVENT EXCEPTION] Exception in user event handler: {ex.Message}");
+        }
+    }
+
     private void UpdatePowerState(PowerState? newPowerState)
     {
         if (Power != newPowerState)
         {
             Power = newPowerState;
-            PowerStateChanged?.Invoke(Power);
+            SafeInvoke(() => PowerStateChanged?.Invoke(Power));
 
             if (Power != PowerState.On && Power != PowerState.Off)
             {
@@ -791,7 +799,7 @@ public class AltairDriver : IDisposable
         if (Source != newSource)
         {
             Source = newSource;
-            SourceStateChanged?.Invoke(Source);
+            SafeInvoke(() => SourceStateChanged?.Invoke(Source));
         }
     }
 
@@ -800,7 +808,7 @@ public class AltairDriver : IDisposable
         if (lightOutput != newLightOutput)
         {
             lightOutput = newLightOutput;
-            lightOutputStateChanged?.Invoke(lightOutput);
+            SafeInvoke(() => lightOutputStateChanged?.Invoke(lightOutput));
         }
     }
 
@@ -809,18 +817,10 @@ public class AltairDriver : IDisposable
         if (Shutter != newShutter)
         {
             Shutter = newShutter;
-            ShutterStateChanged?.Invoke(Shutter);
+            SafeInvoke(() => ShutterStateChanged?.Invoke(Shutter));
         }
     }
 
-    private void ResetStates()
-    {
-        UpdatePowerState(null);
-        UpdateSource(null);
-        UpdatelightOutput(null);
-        UpdateShutter(null);
-    }
-    
     /// Queries all device states starting with SYS:?;
     public async Task QueryAllStatesAsync(CancellationToken cancellationToken = default, bool isInitialQuery = false)
     {
@@ -862,11 +862,7 @@ public class AltairDriver : IDisposable
         if (DeviceIsReady != isReady)
         {
             DeviceIsReady = isReady;
-            if (!isReady)
-            {
-                ResetStates();
-            }
-            DeviceIsReadyChanged?.Invoke(DeviceIsReady);
+            SafeInvoke(() => DeviceIsReadyChanged?.Invoke(DeviceIsReady));
         }
     }
 

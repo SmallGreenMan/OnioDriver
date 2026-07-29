@@ -18,7 +18,28 @@ public class AltairTcpClient : ITcpClient
     private readonly SemaphoreSlim _sendSemaphore = new(1, 1);
     private bool _isDisposed;
 
-    public bool IsConnected => _tcpClient != null && _tcpClient.Connected;
+    public bool IsConnected
+    {
+        get
+        {
+            if (_tcpClient == null || !_tcpClient.Connected) return false;
+            try
+            {
+                Socket socket = _tcpClient.Client;
+                if (socket == null || !socket.Connected) return false;
+
+                if (socket.Poll(1000, SelectMode.SelectRead) && socket.Available == 0)
+                {
+                    return false;
+                }
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+    }
 
     public event EventHandler<string>? DataReceived;
     public event EventHandler? Connected;
@@ -30,6 +51,15 @@ public class AltairTcpClient : ITcpClient
         if (IsConnected) return;
 
         _tcpClient = new TcpClient();
+        try
+        {
+            _tcpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+        }
+        catch
+        {
+            // Ignore if platform does not support specific socket option
+        }
+
         await _tcpClient.ConnectAsync(host, port, cancellationToken);
 
         _stream = _tcpClient.GetStream();
@@ -40,6 +70,7 @@ public class AltairTcpClient : ITcpClient
 
         _cts = new CancellationTokenSource();
         _readTask = Task.Run(() => ReadLoopAsync(_cts.Token), _cts.Token);
+        _ = Task.Run(() => MonitorConnectionLoopAsync(_cts.Token), _cts.Token);
     }
 
     public async Task DisconnectAsync()
@@ -124,6 +155,30 @@ public class AltairTcpClient : ITcpClient
             {
                 _ = DisconnectAsync();
             }
+        }
+    }
+
+    private async Task MonitorConnectionLoopAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested && _tcpClient != null)
+            {
+                await Task.Delay(500, cancellationToken);
+                if (!cancellationToken.IsCancellationRequested && _tcpClient != null && !IsConnected)
+                {
+                    _ = DisconnectAsync();
+                    break;
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected on disconnect
+        }
+        catch
+        {
+            // Ignore monitor errors
         }
     }
 

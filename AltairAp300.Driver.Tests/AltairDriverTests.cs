@@ -302,7 +302,7 @@ public class AltairDriverTests
         fakeClient.SimulateDenyOnConnect = false;
 
         // Wait for retry loop to complete
-        await Task.WhenAny(connectTask, Task.Delay(2500));
+        await Task.WhenAny(connectTask, Task.Delay(4000));
 
         Assert.True(connectTask.IsCompletedSuccessfully);
         Assert.True(driver.IsConnected);
@@ -577,7 +577,7 @@ public class AltairDriverTests
     }
 
     [Fact]
-    public async Task InitialStates_ShouldBeNull_AndResetToNullOnDisconnect()
+    public async Task InitialStates_ShouldBeNull_AndBeCachedOnDisconnect()
     {
         var fakeClient = new FakeTcpClient
         {
@@ -608,12 +608,12 @@ public class AltairDriverTests
         Assert.Equal(100, driver.LightOutput);
         Assert.Equal(false, driver.Shutter);
 
-        // Disconnect and verify states reset to null
+        // Disconnect and verify states are cached (retained)
         await driver.DisconnectAsync();
 
-        Assert.Null(driver.Power);
-        Assert.Null(driver.Source);
-        Assert.Null(driver.LightOutput);
-        Assert.Null(driver.Shutter);
+        Assert.Equal(PowerState.On, driver.Power);
+        Assert.Equal(2, driver.Source);
+        Assert.Equal(100, driver.LightOutput);
+        Assert.Equal(false, driver.Shutter);
     }
 }

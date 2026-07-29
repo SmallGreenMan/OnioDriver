@@ -11,7 +11,7 @@ using var driver = new AltairDriver(ipAddress, port);
 driver.Debug = true;
 
 // Subscribe to driver state change events
-driver.PowerStateChanged += state => Console.WriteLine($"[EVENT] Power state changed: {state} ({(int)state})");
+driver.PowerStateChanged += state => Console.WriteLine($"[EVENT] Power state changed: {state} ({(state.HasValue ? (int)state.Value : "null")})");
 driver.Ready += () => Console.WriteLine("[EVENT] Device System Ready (!RDY)");
 driver.Standby += () => Console.WriteLine("[EVENT] Device System Standby (!STBY)");
 driver.DeviceIsReadyChanged += state => Console.WriteLine($"[EVENT] Device is Ready changed: {state}");
