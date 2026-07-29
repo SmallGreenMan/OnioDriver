@@ -21,6 +21,7 @@ driver.lightOutputStateChanged += val => Console.WriteLine($"[EVENT] Light outpu
 driver.ShutterStateChanged += shutter => Console.WriteLine($"[EVENT] Shutter state changed: {shutter}");
 driver.Connected += () => Console.WriteLine("[EVENT] Connected to AP-3000 Projector");
 driver.Disconnected += () => Console.WriteLine("[EVENT] Disconnected from AP-3000 Projector");
+driver.SyncEvent += (source, status) => Console.WriteLine($"[EVENT] Sync event: Source={source}, Status={status}");
 
 Console.WriteLine($"Driver initialized for {driver.IpAddress}:{driver.Port}. Target FW Version: {driver.FirmwareVersion}");
 

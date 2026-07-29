@@ -131,6 +131,9 @@ public class AltairDriver : IDisposable
     /// Event raised when initial state query completes (true) or when device disconnects (false).
     public event Action<bool>? DeviceIsReadyChanged;
 
+    /// Event raised when undocumented !SYNC:<source>:<status> message is received from projector.
+    public event Action<int, int>? SyncEvent;
+
     #endregion
 
     /// Initializes driver with target ipAddress, port, command timeout (seconds), retries, autoReconnect, debug flag, and optional ITcpClient transport.
@@ -620,6 +623,16 @@ public class AltairDriver : IDisposable
             isUnsolicited = true;
             if (Debug) Console.WriteLine("[HB] Heartbeat ping received (!HB). Sending response 'HB;'...");
             _ = SendHeartbeatResponseAsync();
+        }
+        else if (trimmed.StartsWith("!SYNC:", StringComparison.OrdinalIgnoreCase))
+        {
+            isUnsolicited = true;
+            string[] parts = trimmed.Split(':');
+            if (parts.Length >= 3 && int.TryParse(parts[1], out int syncSource) && int.TryParse(parts[2], out int syncStatus))
+            {
+                if (Debug) Console.WriteLine($"[SYNC] Sync event received for Source: {syncSource}, Status: {syncStatus}");
+                SafeInvoke(() => SyncEvent?.Invoke(syncSource, syncStatus));
+            }
         }
         else if (trimmed.StartsWith("!ID:", StringComparison.OrdinalIgnoreCase))
         {

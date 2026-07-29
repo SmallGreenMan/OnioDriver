@@ -629,4 +629,29 @@ public class AltairDriverTests
 
         Assert.Contains("HB;", fakeClient.SentCommands);
     }
+
+    [Fact]
+    public async Task SyncEvent_ShouldFire_OnUndocumentedSyncCommand()
+    {
+        var fakeClient = new FakeTcpClient();
+        using var driver = new AltairDriver(client: fakeClient);
+
+        int receivedSource = -1;
+        int receivedStatus = -1;
+        driver.SyncEvent += (source, status) =>
+        {
+            receivedSource = source;
+            receivedStatus = status;
+        };
+
+        await driver.ConnectAsync("127.0.0.1");
+
+        // Simulate incoming !SYNC:2:1
+        fakeClient.SimulateIncomingData("!SYNC:2:1");
+
+        await Task.Delay(50);
+
+        Assert.Equal(2, receivedSource);
+        Assert.Equal(1, receivedStatus);
+    }
 }
