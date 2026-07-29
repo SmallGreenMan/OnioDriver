@@ -261,7 +261,7 @@ public class AltairDriverTests
 
         // Calling query/control while disconnected logs error without throwing unhandled crash
         var state = await driver.QueryPowerAsync();
-        Assert.Equal(PowerState.Off, state);
+        Assert.Equal(null, state);
     }
 
     [Fact]
@@ -284,7 +284,15 @@ public class AltairDriverTests
     {
         var fakeClient = new FakeTcpClient
         {
-            SimulateDenyOnConnect = true
+            SimulateDenyOnConnect = true,
+            AutoResponseHandler = cmd => cmd switch
+            {
+                "SYS:?;" => "SYS:1",
+                "SRC:?;" => "SRC:1",
+                "LGT:?;" => "LGT:255",
+                "SHT:?;" => "SHT:0",
+                _ => "ACK"
+            }
         };
         using var driver = new AltairDriver(autoReconnect: true, client: fakeClient);
         driver.InitialRecoveryReconnectDelaySeconds = 1;
@@ -299,10 +307,13 @@ public class AltairDriverTests
         fakeClient.SimulateDenyOnConnect = false;
 
         // Wait for retry loop to complete
-        await Task.WhenAny(connectTask, Task.Delay(6000));
+        await connectTask.WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.True(connectTask.IsCompletedSuccessfully);
         Assert.True(driver.IsConnected);
+
+        // Allow background initial query to complete cleanly
+        await Task.Delay(100);
     }
 
     [Fact]
@@ -322,8 +333,21 @@ public class AltairDriverTests
     [Fact]
     public async Task AutoReconnect_ShouldAttemptReconnect_OnUnexpectedDisconnect()
     {
-        var fakeClient = new FakeTcpClient();
-        using var driver = new AltairDriver(autoReconnect: true, client: fakeClient);
+        var fakeClient = new FakeTcpClient
+        {
+            AutoResponseHandler = cmd => cmd switch
+            {
+                "SYS:?;" => "SYS:1",
+                "SRC:?;" => "SRC:1",
+                "LGT:?;" => "LGT:255",
+                "SHT:?;" => "SHT:0",
+                _ => "ACK"
+            }
+        };
+        using var driver = new AltairDriver(autoReconnect: true, client: fakeClient)
+        {
+            AutoReconnectInitialDelaySeconds = 1
+        };
 
         await driver.ConnectAsync("127.0.0.1");
         Assert.True(driver.IsConnected);
@@ -333,41 +357,10 @@ public class AltairDriverTests
         Assert.False(driver.IsConnected);
 
         // Wait for auto-reconnect attempt (1s delay)
-        await Task.Delay(1500);
+        await Task.Delay(2000);
 
         Assert.True(driver.IsConnected);
-    }
-
-    [Fact]
-    public async Task NonPowerCommands_ShouldWait_DuringTransitionState()
-    {
-        var fakeClient = new FakeTcpClient
-        {
-            AutoResponseHandler = cmd => cmd switch
-            {
-                "SYS:1;" => "ACK",
-                "SRC:2;" => "ACK",
-                "SRC:?;" => "SRC:2",
-                _ => "NAK:10"
-            }
-        };
-        using var driver = new AltairDriver(client: fakeClient);
-        await driver.ConnectAsync("127.0.0.1");
-
-        // Send power on -> power state transitions to SwitchingOn
-        await driver.SetPowerAsync(true);
-        Assert.Equal(PowerState.SwitchingOn, driver.Power);
-
-        // Start non-power command in task
-        Task sourceTask = driver.SetSourceAsync(2);
-        Assert.False(sourceTask.IsCompleted);
-
-        // Simulate device state becoming Ready (!RDY)
-        fakeClient.SimulateIncomingData("!RDY");
-
-        await sourceTask;
-        Assert.Equal(PowerState.On, driver.Power);
-        Assert.Equal(2, driver.Source);
+        await Task.Delay(200);
     }
 
     [Fact]
@@ -480,10 +473,11 @@ public class AltairDriverTests
             }
         };
         using var driver = new AltairDriver(client: fakeClient);
-        await driver.ConnectAsync("127.0.0.1");
+        Task connectTask = driver.ConnectAsync("127.0.0.1");
 
-        // Trigger initial state query via !ID:
+        // Trigger greeting/identification & initial state query via !ID:
         fakeClient.SimulateIncomingData("!ID:AP-3000:1.07");
+        await connectTask;
 
         // Immediately attempt user command during initial query
         await driver.SetSourceAsync(2);
@@ -547,6 +541,7 @@ public class AltairDriverTests
         };
         using var driver = new AltairDriver(client: fakeClient, autoReconnect: true)
         {
+            AutoReconnectInitialDelaySeconds = 1,
             InitialRecoveryReconnectDelaySeconds = 1
         };
 

@@ -21,6 +21,7 @@ public class AltairDriver : IDisposable
     private TaskCompletionSource<bool>? _initialQueryTcs;
     private bool _manualDisconnectRequested;
     private bool _isDisposed;
+    private volatile bool _isConnecting;
 
     #region Configuration & State Properties
 
@@ -164,45 +165,53 @@ public class AltairDriver : IDisposable
     public async Task ConnectAsync(string? host = null, int? port = null, CancellationToken cancellationToken = default)
     {
         _manualDisconnectRequested = false;
-        string targetHost = !string.IsNullOrWhiteSpace(host) ? host : IpAddress;
-        int targetPort = port ?? Port;
-
-        int cycleAttempt = 0;
-        int reconnectDelaySeconds = Math.Max(1, InitialRecoveryReconnectDelaySeconds);
-
-        while (!cancellationToken.IsCancellationRequested && !_manualDisconnectRequested && !_isDisposed)
+        _isConnecting = true;
+        try
         {
-            _connectionGreetingTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            string targetHost = !string.IsNullOrWhiteSpace(host) ? host : IpAddress;
+            int targetPort = port ?? Port;
 
-            try
+            int cycleAttempt = 0;
+            int reconnectDelaySeconds = Math.Max(1, InitialRecoveryReconnectDelaySeconds);
+
+            while (!cancellationToken.IsCancellationRequested && !_manualDisconnectRequested && !_isDisposed)
             {
-                await _client.ConnectAsync(targetHost, targetPort, cancellationToken);
+                _connectionGreetingTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-                using var greetingCts = new CancellationTokenSource(TimeSpan.FromSeconds(Math.Max(3, CommandTimeout)));
-                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, greetingCts.Token);
-
-                using (linkedCts.Token.Register(() => _connectionGreetingTcs.TrySetCanceled(linkedCts.Token)))
+                try
                 {
-                    await _connectionGreetingTcs.Task;
-                    return;
+                    await _client.ConnectAsync(targetHost, targetPort, cancellationToken);
+
+                    using var greetingCts = new CancellationTokenSource(TimeSpan.FromSeconds(Math.Max(3, CommandTimeout)));
+                    using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, greetingCts.Token);
+
+                    using (linkedCts.Token.Register(() => _connectionGreetingTcs.TrySetCanceled(linkedCts.Token)))
+                    {
+                        await _connectionGreetingTcs.Task;
+                        return;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    await _client.DisconnectAsync();
+
+                    if (!AutoReconnect || cancellationToken.IsCancellationRequested || _manualDisconnectRequested || _isDisposed)
+                    {
+                        throw;
+                    }
+
+                    if (Debug) Console.WriteLine($"[RECOVERY] Connection failed or denied ({ex.Message}). Retrying in {reconnectDelaySeconds}s...");
+                    await Task.Delay(TimeSpan.FromSeconds(reconnectDelaySeconds), cancellationToken);
+
+                    cycleAttempt++;
+                    int maxDelay = Math.Max(1, MaxRecoveryReconnectDelaySeconds);
+                    reconnectDelaySeconds = Math.Min(maxDelay, reconnectDelaySeconds + cycleAttempt + 1);
                 }
             }
-            catch (Exception ex)
-            {
-                await _client.DisconnectAsync();
-
-                if (!AutoReconnect || cancellationToken.IsCancellationRequested || _manualDisconnectRequested || _isDisposed)
-                {
-                    throw;
-                }
-
-                if (Debug) Console.WriteLine($"[RECOVERY] Connection failed or denied ({ex.Message}). Retrying in {reconnectDelaySeconds}s...");
-                await Task.Delay(TimeSpan.FromSeconds(reconnectDelaySeconds), cancellationToken);
-
-                cycleAttempt++;
-                int maxDelay = Math.Max(1, MaxRecoveryReconnectDelaySeconds);
-                reconnectDelaySeconds = Math.Min(maxDelay, reconnectDelaySeconds + cycleAttempt + 1);
-            }
+        }
+        finally
+        {
+            _isConnecting = false;
         }
     }
 
@@ -232,7 +241,7 @@ public class AltairDriver : IDisposable
         UpdateDeviceIsReady(false);
         SafeInvoke(() => Disconnected?.Invoke());
 
-        if (AutoReconnect && !_manualDisconnectRequested && !_isDisposed)
+        if (AutoReconnect && !_manualDisconnectRequested && !_isConnecting && !_isDisposed)
         {
             StartAutoReconnect();
         }
@@ -243,6 +252,7 @@ public class AltairDriver : IDisposable
         lock (_reconnectLock)
         {
             if (_reconnectTask != null && !_reconnectTask.IsCompleted) return;
+            if (_isConnecting) return;
 
             _reconnectCts?.Cancel();
             _reconnectCts = new CancellationTokenSource();
@@ -484,8 +494,16 @@ public class AltairDriver : IDisposable
         if (waitTask != null && !waitTask.IsCompleted)
         {
             if (Debug) Console.WriteLine("[QUEUE] Waiting for initial device state query to complete...");
-            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            await Task.WhenAny(waitTask, Task.Delay(Timeout.Infinite, linkedCts.Token));
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(Math.Max(5, CommandTimeout * 2)));
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+            try
+            {
+                await waitTask.WaitAsync(linkedCts.Token);
+            }
+            catch (Exception ex)
+            {
+                if (Debug) Console.WriteLine($"[QUEUE] Initial state query wait ended: {ex.Message}");
+            }
         }
     }
 
@@ -503,7 +521,17 @@ public class AltairDriver : IDisposable
             await EnsureOperationalStateAsync(cancellationToken);
         }
 
-        await _commandLock.WaitAsync(cancellationToken);
+        bool lockAcquired = false;
+        try
+        {
+            await _commandLock.WaitAsync(cancellationToken);
+            lockAcquired = true;
+        }
+        catch (Exception)
+        {
+            throw new ObjectDisposedException(nameof(AltairDriver));
+        }
+
         try
         {
             int cycleAttempt = 0;
@@ -552,7 +580,7 @@ public class AltairDriver : IDisposable
                     }
                     catch (Exception ex)
                     {
-                        if (cancellationToken.IsCancellationRequested)
+                        if (cancellationToken.IsCancellationRequested || _isDisposed)
                         {
                             throw;
                         }
@@ -567,6 +595,11 @@ public class AltairDriver : IDisposable
                 // If after CommandRetries there was still no feedback, perform recovery cycle
                 if (!feedbackReceived)
                 {
+                    if (isInitialQuery)
+                    {
+                        throw new TimeoutException($"No feedback received after {retries} attempt(s) for initial query '{command.Trim()}'.");
+                    }
+
                     if (Debug) Console.WriteLine($"[RECOVERY] No feedback received after {retries} attempt(s) for '{command.Trim()}'. Disconnecting...");
 
                     await _client.DisconnectAsync();
@@ -581,7 +614,6 @@ public class AltairDriver : IDisposable
 
                     if (Debug) Console.WriteLine($"[RECOVERY] Reconnecting to target device...");
                     await ConnectAsync(cancellationToken: cancellationToken);
-                    // Note: ConnectAsync includes 1s pause after connection
                 }
             }
 
@@ -589,7 +621,10 @@ public class AltairDriver : IDisposable
         }
         finally
         {
-            _commandLock.Release();
+            if (lockAcquired)
+            {
+                _commandLock.Release();
+            }
         }
     }
 
@@ -740,7 +775,11 @@ public class AltairDriver : IDisposable
 
     private async Task EnsureOperationalStateAsync(CancellationToken cancellationToken)
     {
-        while (Power != PowerState.On && Power != PowerState.Off)
+        // If power state is unknown, there's no need to wait for a transition before sending commands.
+        if (Power == null)
+            return;
+
+        while (Power != PowerState.On && Power != PowerState.Off && !_isDisposed)
         {
             Task waitTask;
             lock (_stateLock)
