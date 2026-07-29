@@ -17,7 +17,7 @@ driver.Standby += () => Console.WriteLine("[EVENT] Device System Standby (!STBY)
 driver.DeviceIsReadyChanged += state => Console.WriteLine($"[EVENT] Device is Ready changed: {state}");
 
 driver.SourceStateChanged += src => Console.WriteLine($"[EVENT] Source state changed: {src}");
-driver.lightOutputStateChanged += val => Console.WriteLine($"[EVENT] Light output state changed: {val}");
+driver.LightOutputStateChanged += val => Console.WriteLine($"[EVENT] Light output state changed: {val}");
 driver.ShutterStateChanged += shutter => Console.WriteLine($"[EVENT] Shutter state changed: {shutter}");
 driver.Connected += () => Console.WriteLine("[EVENT] Connected to AP-3000 Projector");
 driver.Disconnected += () => Console.WriteLine("[EVENT] Disconnected from AP-3000 Projector");
@@ -33,7 +33,7 @@ try
     Console.WriteLine($"Attempting connection to {driver.IpAddress}:{driver.Port}...");
     await driver.ConnectAsync();
     Console.WriteLine($"IsConnected: {driver.IsConnected}");
-    Console.WriteLine($"FW: {driver.FW}");
+    Console.WriteLine($"FirmwareVersion: {driver.FirmwareVersion}");
     
     Console.WriteLine($"Power is: {driver.Power}");
     Console.WriteLine($"Source is: {driver.Source}");

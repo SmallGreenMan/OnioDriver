@@ -14,9 +14,10 @@ public class AltairTcpClient : ITcpClient
     private StreamReader? _reader;
     private StreamWriter? _writer;
     private CancellationTokenSource? _cts;
-    private Task? _readTask;
     private readonly SemaphoreSlim _sendSemaphore = new(1, 1);
     private bool _isDisposed;
+    private volatile bool _isDisconnected;
+    private volatile bool _hasConnected;
 
     public bool IsConnected
     {
@@ -47,8 +48,8 @@ public class AltairTcpClient : ITcpClient
 
     public async Task ConnectAsync(string host, int port = 5100, CancellationToken cancellationToken = default)
     {
-        Console.WriteLine("---> try to connect");
         if (IsConnected) return;
+        _isDisconnected = false;
 
         _tcpClient = new TcpClient();
         try
@@ -66,16 +67,17 @@ public class AltairTcpClient : ITcpClient
         _reader = new StreamReader(_stream, Encoding.ASCII);
         _writer = new StreamWriter(_stream, Encoding.ASCII) { AutoFlush = true };
 
+        _hasConnected = true;
         Connected?.Invoke(this, EventArgs.Empty);
 
         _cts = new CancellationTokenSource();
-        _readTask = Task.Run(() => ReadLoopAsync(_cts.Token), _cts.Token);
-        _ = Task.Run(() => MonitorConnectionLoopAsync(_cts.Token), _cts.Token);
+        _ = Task.Run(() => ReadLoopAsync(_cts.Token), _cts.Token);
     }
 
-    public async Task DisconnectAsync()
+    public Task DisconnectAsync()
     {
-        if (_tcpClient == null && _stream == null) return;
+        if (_isDisconnected) return Task.CompletedTask;
+        _isDisconnected = true;
 
         try
         {
@@ -95,10 +97,14 @@ public class AltairTcpClient : ITcpClient
             _reader = null;
             _writer = null;
 
-            Disconnected?.Invoke(this, EventArgs.Empty);
+            if (_hasConnected)
+            {
+                _hasConnected = false;
+                Disconnected?.Invoke(this, EventArgs.Empty);
+            }
         }
 
-        await Task.CompletedTask;
+        return Task.CompletedTask;
     }
 
     public async Task SendAsync(string data, CancellationToken cancellationToken = default)
@@ -112,7 +118,6 @@ public class AltairTcpClient : ITcpClient
         try
         {
             await _writer.WriteAsync(data.AsMemory(), cancellationToken);
-            await _writer.FlushAsync(cancellationToken);
         }
         catch (Exception)
         {
@@ -158,29 +163,6 @@ public class AltairTcpClient : ITcpClient
         }
     }
 
-    private async Task MonitorConnectionLoopAsync(CancellationToken cancellationToken)
-    {
-        try
-        {
-            while (!cancellationToken.IsCancellationRequested && _tcpClient != null)
-            {
-                await Task.Delay(500, cancellationToken);
-                if (!cancellationToken.IsCancellationRequested && _tcpClient != null && !IsConnected)
-                {
-                    _ = DisconnectAsync();
-                    break;
-                }
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            // Expected on disconnect
-        }
-        catch
-        {
-            // Ignore monitor errors
-        }
-    }
 
     public void Dispose()
     {

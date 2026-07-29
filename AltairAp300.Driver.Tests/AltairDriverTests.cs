@@ -171,13 +171,13 @@ public class AltairDriverTests
         await driver.ConnectAsync("127.0.0.1");
 
         int? output = 0;
-        driver.lightOutputStateChanged += val => output = val;
+        driver.LightOutputStateChanged += val => output = val;
 
         await driver.SetLightOutputAsync(85);
 
         Assert.Contains("LGT:85;", fakeClient.SentCommands);
         Assert.Contains("LGT:?;", fakeClient.SentCommands);
-        Assert.Equal(85, driver.lightOutput);
+        Assert.Equal(85, driver.LightOutput);
         Assert.Equal(85, driver.LightOutput);
         Assert.Equal(85, output);
     }
@@ -195,7 +195,7 @@ public class AltairDriverTests
         int? lgt = await driver.QueryLightOutputAsync();
 
         Assert.Equal(50, lgt);
-        Assert.Equal(50, driver.lightOutput);
+        Assert.Equal(50, driver.LightOutput);
     }
 
     [Fact]
@@ -327,7 +327,6 @@ public class AltairDriverTests
         Assert.Equal(10, driver.CommandTimeout);
         Assert.Equal(3, driver.CommandRetries);
         Assert.True(driver.AutoReconnect);
-        Assert.True(driver.AutoReconect);
     }
 
     [Fact]
@@ -385,7 +384,6 @@ public class AltairDriverTests
         // Allow async QueryAllStatesTask to run
         await Task.Delay(200);
 
-        Assert.Equal("1.07", driver.FW);
         Assert.Equal("1.07", driver.FirmwareVersion);
 
         // Verify sent commands started with SYS:?;

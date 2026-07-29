@@ -40,12 +40,6 @@ public class AltairDriver : IDisposable
     /// Enable automatic reconnection on connection loss (default true).
     public bool AutoReconnect { get; set; } = true;
 
-    /// Alias for AutoReconnect property.
-    public bool AutoReconect
-    {
-        get => AutoReconnect;
-        set => AutoReconnect = value;
-    }
 
     /// Enable debug console output for data exchange with device (default false).
     public bool Debug { get; set; }
@@ -80,16 +74,11 @@ public class AltairDriver : IDisposable
     public int? Source { get; private set; }
 
     /// Current light output percentage (0–100) or null if unknown.
-    public int? lightOutput { get; private set; }
-
-    /// Alias for lightOutput property.
-    public int? LightOutput => lightOutput;
+    public int? LightOutput { get; private set; }
 
     /// Shutter state: true = Closed (blank), false = Open, null = Unknown.
     public bool? Shutter { get; private set; }
     
-    public string FW { get; private set; } = string.Empty;
-
     /// Indicates fiscal connection status to the device.
     public bool IsConnected => _client.IsConnected;
     
@@ -97,7 +86,7 @@ public class AltairDriver : IDisposable
     public bool DeviceIsReady { get; private set; }
     
     /// Firmware version of the device protocol.
-    public string FirmwareVersion { get; private set; } = "1.07";
+    public string FirmwareVersion { get; private set; } = string.Empty;
 
 
     #endregion
@@ -119,8 +108,8 @@ public class AltairDriver : IDisposable
     /// Event raised when Shutter state changes.
     public event Action<bool?>? ShutterStateChanged;
 
-    /// Event raised when lightOutput state changes.
-    public event Action<int?>? lightOutputStateChanged;
+    /// Event raised when LightOutput state changes.
+    public event Action<int?>? LightOutputStateChanged;
 
     /// Event raised when connected to device.
     public event Action? Connected;
@@ -223,12 +212,13 @@ public class AltairDriver : IDisposable
         await _client.DisconnectAsync();
     }
 
+    /// Synchronous disconnect from the projector.
     public void Disconnect()
     {
         _manualDisconnectRequested = true;
         _reconnectCts?.Cancel();
         UpdateDeviceIsReady(false);
-        _client.DisconnectAsync().GetAwaiter().GetResult();
+        _ = _client.DisconnectAsync();
     }
 
     private void OnConnected(object? sender, EventArgs e)
@@ -444,7 +434,7 @@ public class AltairDriver : IDisposable
             if (response.StartsWith("LGT:") && int.TryParse(response.AsSpan(4), out int rawLgt))
             {
                 int scaledLgt = ConvertRawLightOutputToPercent(rawLgt);
-                UpdatelightOutput(scaledLgt);
+                UpdateLightOutput(scaledLgt);
                 return scaledLgt;
             }
         }
@@ -452,7 +442,7 @@ public class AltairDriver : IDisposable
         {
             if (Debug) Console.WriteLine($"[ERROR] QueryLightOutputAsync failed: {ex.Message}");
         }
-        return lightOutput;
+        return LightOutput;
     }
 
     /// Queries the shutter state from the projector.
@@ -674,7 +664,7 @@ public class AltairDriver : IDisposable
             isUnsolicited = true;
             string[] parts = trimmed.Split(':');
             string fwVersion = parts.Length >= 3 ? parts[2] : (trimmed.Length >= 12 ? trimmed.Substring(12) : trimmed);
-            UpdateFw(fwVersion);
+            UpdateFirmwareVersion(fwVersion);
             
             _connectionGreetingTcs?.TrySetResult(true);
 
@@ -712,7 +702,7 @@ public class AltairDriver : IDisposable
             if (int.TryParse(trimmed.AsSpan(4), out int rawLgt))
             {
                 int scaledLgt = ConvertRawLightOutputToPercent(rawLgt);
-                UpdatelightOutput(scaledLgt);
+                UpdateLightOutput(scaledLgt);
             }
         }
         else if (trimmed.StartsWith("SHT:"))
@@ -857,12 +847,12 @@ public class AltairDriver : IDisposable
         }
     }
 
-    private void UpdatelightOutput(int? newLightOutput)
+    private void UpdateLightOutput(int? newLightOutput)
     {
-        if (lightOutput != newLightOutput)
+        if (LightOutput != newLightOutput)
         {
-            lightOutput = newLightOutput;
-            SafeInvoke(() => lightOutputStateChanged?.Invoke(lightOutput));
+            LightOutput = newLightOutput;
+            SafeInvoke(() => LightOutputStateChanged?.Invoke(LightOutput));
         }
     }
 
@@ -920,12 +910,11 @@ public class AltairDriver : IDisposable
         }
     }
 
-    private void UpdateFw(string newFw)
+    private void UpdateFirmwareVersion(string newVersion)
     {
-        if (FW != newFw)
+        if (FirmwareVersion != newVersion)
         {
-            FW = newFw;
-            FirmwareVersion = newFw;
+            FirmwareVersion = newVersion;
         }
     }
 
