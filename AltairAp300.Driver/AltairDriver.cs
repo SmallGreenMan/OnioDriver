@@ -126,9 +126,6 @@ public class AltairDriver : IDisposable
     
 
     /// Event raised when disconnected from device.
-    public event Action? Disconected;
-
-    /// Event raised when disconnected from device (standard spelling alias).
     public event Action? Disconnected;
 
     /// Event raised when initial state query completes (true) or when device disconnects (false).
@@ -230,7 +227,6 @@ public class AltairDriver : IDisposable
     private void OnDisconnected(object? sender, EventArgs e)
     {
         UpdateDeviceIsReady(false);
-        SafeInvoke(() => Disconected?.Invoke());
         SafeInvoke(() => Disconnected?.Invoke());
 
         if (AutoReconnect && !_manualDisconnectRequested && !_isDisposed)
@@ -619,6 +615,12 @@ public class AltairDriver : IDisposable
             if (Debug) Console.WriteLine("[CONNECT] Connection denied: Another client is connected.");
             _connectionGreetingTcs?.TrySetException(new InvalidOperationException("[CONNECT] Connection denied: Another client is Connected"));
         }
+        else if (trimmed.Equals("!HB", StringComparison.OrdinalIgnoreCase))
+        {
+            isUnsolicited = true;
+            if (Debug) Console.WriteLine("[HB] Heartbeat ping received (!HB). Sending response 'HB;'...");
+            _ = SendHeartbeatResponseAsync();
+        }
         else if (trimmed.StartsWith("!ID:", StringComparison.OrdinalIgnoreCase))
         {
             isUnsolicited = true;
@@ -872,6 +874,22 @@ public class AltairDriver : IDisposable
         {
             FW = newFw;
             FirmwareVersion = newFw;
+        }
+    }
+
+    private async Task SendHeartbeatResponseAsync()
+    {
+        try
+        {
+            if (IsConnected)
+            {
+                if (Debug) Console.WriteLine("TX: HB;");
+                await _client.SendAsync("HB;");
+            }
+        }
+        catch (Exception ex)
+        {
+            if (Debug) Console.WriteLine($"[ERROR] Failed to send heartbeat response: {ex.Message}");
         }
     }
 

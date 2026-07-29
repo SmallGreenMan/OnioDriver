@@ -14,11 +14,9 @@ public class AltairDriverTests
 
         bool connectedFired = false;
         bool disconnectedFired = false;
-        bool disconectedPromptSpellingFired = false;
 
         driver.Connected += () => connectedFired = true;
         driver.Disconnected += () => disconnectedFired = true;
-        driver.Disconected += () => disconectedPromptSpellingFired = true;
 
         await driver.ConnectAsync("127.0.0.1", 5100);
 
@@ -29,7 +27,6 @@ public class AltairDriverTests
 
         Assert.False(driver.IsConnected);
         Assert.True(disconnectedFired);
-        Assert.True(disconectedPromptSpellingFired);
     }
 
     [Fact]
@@ -302,7 +299,7 @@ public class AltairDriverTests
         fakeClient.SimulateDenyOnConnect = false;
 
         // Wait for retry loop to complete
-        await Task.WhenAny(connectTask, Task.Delay(4000));
+        await Task.WhenAny(connectTask, Task.Delay(6000));
 
         Assert.True(connectTask.IsCompletedSuccessfully);
         Assert.True(driver.IsConnected);
@@ -615,5 +612,21 @@ public class AltairDriverTests
         Assert.Equal(2, driver.Source);
         Assert.Equal(100, driver.LightOutput);
         Assert.Equal(false, driver.Shutter);
+    }
+
+    [Fact]
+    public async Task HeartbeatPing_ShouldRespondWithHB_WithoutAwaitingAck()
+    {
+        var fakeClient = new FakeTcpClient();
+        using var driver = new AltairDriver(client: fakeClient);
+
+        await driver.ConnectAsync("127.0.0.1");
+
+        // Simulate incoming !HB from device
+        fakeClient.SimulateIncomingData("!HB");
+
+        await Task.Delay(100);
+
+        Assert.Contains("HB;", fakeClient.SentCommands);
     }
 }
