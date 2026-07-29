@@ -19,28 +19,7 @@ public class AltairTcpClient : ITcpClient
     private volatile bool _isDisconnected;
     private volatile bool _hasConnected;
 
-    public bool IsConnected
-    {
-        get
-        {
-            if (_tcpClient == null || !_tcpClient.Connected) return false;
-            try
-            {
-                Socket socket = _tcpClient.Client;
-                if (socket == null || !socket.Connected) return false;
-
-                if (socket.Poll(1000, SelectMode.SelectRead) && socket.Available == 0)
-                {
-                    return false;
-                }
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-    }
+    public bool IsConnected => _hasConnected;
 
     public event EventHandler<string>? DataReceived;
     public event EventHandler? Connected;
