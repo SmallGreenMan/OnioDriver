@@ -9,7 +9,7 @@ Console.WriteLine("---> Altair AP-3000 Demo Started <---");
 // When true, hosts AltairPresenter (WebSocket server on port 10001) instead of running the console demo below.
 const bool DebugRect = true;
 
-var ipAddress = args.Length > 0 ? args[0] : "10.211.55.3";
+var ipAddress = args.Length > 0 ? args[0] : "localhost"; // "10.211.55.3";
 var port = args.Length > 1 && int.TryParse(args[1], out var p) ? p : 5100;
 
 if (DebugRect)
