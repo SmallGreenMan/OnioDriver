@@ -1,0 +1,79 @@
+name: CI
+
+# Default behavior:
+#   - pull_request: runs the Test step only (build happens implicitly as part of `dotnet test`).
+#   - workflow_dispatch: lets you pick exactly which step(s) to run (build / run / test),
+#     and which single test to execute in the Test step.
+"on":
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      run_build:
+        description: 'Run the Build step'
+        type: boolean
+        default: true
+      run_app:
+        description: 'Run the Run step (starts Altair.Demo as a smoke test)'
+        type: boolean
+        default: true
+      run_tests:
+        description: 'Run the Test step'
+        type: boolean
+        default: true
+      test_name:
+        description: 'Fully-qualified name (or substring) of the single test to run'
+        type: string
+        default: 'AltairAp300.Driver.Tests.AltairDriverTests.ConnectAndDisconnect_ShouldRaiseConnectionEvents'
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  SOLUTION: Altair.Demo.sln
+
+jobs:
+  pipeline:
+    name: Build, Run & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Caches ~/.nuget/packages, keyed on the *.csproj files (no packages.lock.json in this
+      # repo), so `dotnet restore` is a no-op on unchanged dependencies instead of re-downloading
+      # every run.
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+
+      - name: Restore
+        run: dotnet restore "$SOLUTION"
+
+      - name: Build
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_build == 'true'
+        run: dotnet build "$SOLUTION" --no-restore --configuration Release
+
+      # Altair.Demo tries to connect to a real projector and (with DebugRect=true) hosts a
+      # WebSocket server that runs forever, so there is no real device in CI, this step only
+      # verifies the app starts and stays up without crashing. Exit code 124 = timeout = success.
+      - name: Run
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_app == 'true'
+        run: |
+          set +e
+          timeout 20s dotnet run --project Altair.Demo/Altair.Demo.csproj --configuration Release
+          code=$?
+          if [ $code -ne 0 ] && [ $code -ne 124 ]; then
+            echo "Altair.Demo exited unexpectedly with code $code"
+            exit $code
+          fi
+          echo "Altair.Demo ran successfully (exit code $code)"
+
+      - name: Test
+        if: github.event_name == 'pull_request' || github.event.inputs.run_tests == 'true'
+        run: |
+          dotnet test AltairAp300.Driver.Tests/AltairAp300.Driver.Tests.csproj \
+            --configuration Release \
+            --filter "FullyQualifiedName~${{ github.event.inputs.test_name || 'AltairAp300.Driver.Tests.AltairDriverTests.ConnectAndDisconnect_ShouldRaiseConnectionEvents' }}"
