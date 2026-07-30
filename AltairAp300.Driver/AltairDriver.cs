@@ -644,6 +644,18 @@ public class AltairDriver : IDisposable
             isUnsolicited = true;
             UpdatePowerState(PowerState.On);
             Ready?.Invoke();
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await QuerySourceAsync(CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    if (Debug) Console.WriteLine($"[RDY] Failed to query source state: {ex.Message}");
+                }
+            });
         }
         else if (trimmed.Equals("!STBY", StringComparison.OrdinalIgnoreCase))
         {

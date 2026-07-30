@@ -465,7 +465,7 @@ The device sends the following messages without any prior command:
 | Message | Trigger | Driver Action |
 |---|---|---|
 | `!ID:AP-3000:<fw>` | On every TCP connect | Extracts `FirmwareVersion`, unblocks `ConnectAsync`, triggers `QueryAllStatesAsync` in background |
-| `!RDY` | System fully powered on | Sets `Power = On`, raises `PowerStateChanged`, raises `Ready` |
+| `!RDY` | System fully powered on | Sets `Power = On`, raises `PowerStateChanged`, raises `Ready`, queries `SRC:?;` in background |
 | `!STBY` | System fully in standby | Sets `Power = Off`, raises `PowerStateChanged`, raises `Standby` |
 | `!HB` | Heartbeat request (~every 20–25 s) | Driver responds `HB;` within 5 s. Missed 2× HB → device sends `!DROP` and closes socket |
 | `!DROP` | Heartbeat timeout | Device closes connection. Driver handles per `AutoReconnect` setting |
@@ -629,7 +629,7 @@ Source: vendor reference rev. 2.4 + real-world integration testing with FW 1.07.
 | Message | Trigger | Notes |
 |---|---|---|
 | `!ID:AP-3000:<fw>` | Sent immediately on every TCP connect | 🔬 E.g. `!ID:AP-3000:1.07`. FW version is the third colon-delimited field. |
-| `!RDY` | System finished powering on | 🔬 ⚠️ Not in vendor excerpt. Follows power-on cycle (~8 s after `SYS:1;`) |
+| `!RDY` | System finished powering on | 🔬 ⚠️ Not in vendor excerpt. Follows power-on cycle (~8 s after `SYS:1;`). Driver automatically issues `SRC:?;` after receiving this message |
 | `!STBY` | System finished powering off | 🔬 ⚠️ Not in vendor excerpt. Follows power-off cycle (~5 s after `SYS:0;`) |
 | `!HB` | Heartbeat ping (~every 20–25 s) | 🔬 Device expects `HB;` response within 5 s |
 | `!DROP` | Heartbeat timeout (missed 2 consecutive HBs) | 🔬 Device sends this then closes the TCP socket |
