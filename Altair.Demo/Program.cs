@@ -1,11 +1,22 @@
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using AltairAp300.Driver;
+using Altair.Demo;
 
 Console.WriteLine("---> Altair AP-3000 Demo Started <---");
 
+// When true, hosts AltairPresenter (WebSocket server on port 10001) instead of running the console demo below.
+const bool DebugRect = true;
+
 var ipAddress = args.Length > 0 ? args[0] : "10.211.55.3";
 var port = args.Length > 1 && int.TryParse(args[1], out var p) ? p : 5100;
+
+if (DebugRect)
+{
+    await RunPresenterAsync(ipAddress, port);
+    return;
+}
 
 using var driver = new AltairDriver(ipAddress, port);
 driver.Debug = true;
@@ -118,3 +129,21 @@ if (!Console.IsInputRedirected)
 }
 
 Console.WriteLine("---> Altair AP-3000 Demo Finished <---");
+
+static async Task RunPresenterAsync(string ipAddress, int port)
+{
+    await using var presenter = new AltairPresenter(ipAddress, port);
+    await presenter.StartAsync();
+
+    Console.WriteLine("Presenter running. Press any key to stop...");
+    if (!Console.IsInputRedirected)
+    {
+        Console.ReadKey(true);
+    }
+    else
+    {
+        await Task.Delay(Timeout.Infinite);
+    }
+
+    Console.WriteLine("---> Altair AP-3000 Demo Finished <---");
+}
