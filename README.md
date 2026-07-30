@@ -56,4 +56,5 @@ dotnet run --project Altair.Demo -- <ip> [port]
 ## Further documentation
 
 - `AltairDriverSpecification.md` — full driver specification (properties, events, methods, device protocol).
+- 'PROTOCOL.md' - real device protocol bihavior
 - `.github/workflows/ci.yml` — CI pipeline (build / run / test), runs on PRs and manually (`workflow_dispatch`).
